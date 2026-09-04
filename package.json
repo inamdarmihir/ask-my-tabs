@@ -1,9 +1,15 @@
 {
   "name": "ask-my-tabs",
   "version": "0.1.0",
-  "description": "A private, on-device research assistant for your open tabs. Embeddings and generation both run locally in the browser.",
+  "description": "A private, on-device research assistant for your open tabs. Embeddings and generation both run locally in the browser via WebGPU/WASM -- no server, nothing leaves your machine.",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "author": "Mihir Inamdar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/inamdarmihir/ask-my-tabs.git"
+  },
   "scripts": {
     "build": "node build.js",
     "watch": "node build.js --watch"
