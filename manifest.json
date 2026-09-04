@@ -11,7 +11,7 @@
     "service_worker": "dist/background.bundle.js",
     "type": "module"
   },
-  "permissions": ["tabs", "scripting", "storage", "activeTab"],
+  "permissions": ["tabs", "scripting", "storage", "activeTab", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
