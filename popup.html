@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Ask My Tabs</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Ask My Tabs</h1>
+      <p class="tagline">Private, on-device Q&amp;A across your open tabs.</p>
+    </header>
+
+    <section id="model-banner" class="banner">
+      <span id="model-status-text">Models not loaded yet.</span>
+      <button id="load-models-btn">Load models (~1.1GB, one-time)</button>
+    </section>
+
+    <section id="working-set">
+      <div class="section-header">
+        <h2>Working set</h2>
+        <button id="add-tab-btn">+ Add current tab</button>
+      </div>
+      <ul id="tab-list"></ul>
+      <p id="empty-state" class="empty-state">No tabs added yet. Add a few, then ask a question.</p>
+    </section>
+
+    <section id="ask-section">
+      <textarea id="question-input" rows="2" placeholder="Ask something across your added tabs..."></textarea>
+      <button id="ask-btn">Ask</button>
+    </section>
+
+    <section id="status-line" class="status-line" hidden></section>
+
+    <section id="answer-section" hidden>
+      <div id="answer-text"></div>
+      <ol id="citations"></ol>
+    </section>
+
+    <script type="module" src="dist/popup.bundle.js"></script>
+  </body>
+</html>

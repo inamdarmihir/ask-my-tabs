@@ -1,0 +1,18 @@
+{
+  "name": "ask-my-tabs",
+  "version": "0.1.0",
+  "description": "A private, on-device research assistant for your open tabs. Embeddings and generation both run locally in the browser.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.1"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.7.5",
+    "@mlc-ai/web-llm": "^0.2.79"
+  }
+}

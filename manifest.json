@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Ask My Tabs",
+  "version": "0.1.0",
+  "description": "Ask questions across your open tabs. Embeddings and answer generation both run on your machine — nothing about your tabs is ever sent anywhere.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Ask My Tabs"
+  },
+  "background": {
+    "service_worker": "dist/background.bundle.js",
+    "type": "module"
+  },
+  "permissions": ["tabs", "scripting", "storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
