@@ -34,7 +34,7 @@ var OPENAI_COMPATIBLE_PROVIDERS = {
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "gpt-6-luna",
     keyHint: "sk-...",
     keyUrl: "https://platform.openai.com/api-keys"
   },
@@ -88,6 +88,11 @@ var WORKING_SET_KEY = "workingSet";
 var el = {
   modelBanner: document.getElementById("model-banner"),
   modelStatusText: document.getElementById("model-status-text"),
+  modelChip: document.getElementById("model-chip"),
+  modelProgress: document.getElementById("model-progress"),
+  qdrantChip: document.getElementById("qdrant-chip"),
+  qdrantChipText: document.getElementById("qdrant-chip-text"),
+  addAllBtn: document.getElementById("add-all-btn"),
   loadModelsBtn: document.getElementById("load-models-btn"),
   qdrantBanner: document.getElementById("qdrant-banner"),
   qdrantStatusText: document.getElementById("qdrant-status-text"),
@@ -168,6 +173,29 @@ async function addCurrentTab() {
     el.addTabBtn.textContent = "+ Add current tab";
   }
 }
+async function addAllTabs() {
+  const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => /^https?:\/\//.test(t.url || ""));
+  if (tabs.length === 0) return;
+  el.addTabBtn.disabled = true;
+  el.addAllBtn.disabled = true;
+  el.timingNote.hidden = true;
+  const started = performance.now();
+  let added = 0;
+  const failures = [];
+  for (let i = 0; i < tabs.length; i++) {
+    el.addAllBtn.textContent = `Adding ${i + 1}/${tabs.length}...`;
+    const res = await sendToBackground({ type: "INDEX_TAB", tabId: tabs[i].id }).catch((e) => ({ ok: false, error: String(e) }));
+    if (res?.ok) added += 1;
+    else failures.push(res?.error || "unknown error");
+  }
+  renderWorkingSet(await getWorkingSet());
+  refreshLibrary();
+  el.timingNote.hidden = false;
+  el.timingNote.textContent = `Added ${added} of ${tabs.length} pages in ${formatMs(performance.now() - started)}` + (failures.length ? `. First problem: ${failures[0]}` : ".");
+  el.addTabBtn.disabled = false;
+  el.addAllBtn.disabled = false;
+  el.addAllBtn.textContent = "Add all";
+}
 function formatDate(ms) {
   if (!ms) return "unknown date";
   return new Date(ms).toLocaleString();
@@ -239,14 +267,17 @@ This permanently removes its indexed chunks from Qdrant. This is different from 
   refreshLibrary();
 }
 var answerModelLabel = null;
+var qdrantLocation = "local";
 async function refreshModelStatus() {
   try {
     const cfg = await getConfig();
     const provider = ALL_API_PROVIDERS[cfg.llmProvider];
-    answerModelLabel = provider ? `${provider.label} (${cfg.llmModel || provider.defaultModel})` : null;
+    answerModelLabel = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : null;
+    qdrantLocation = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(cfg.qdrantUrl) ? "local" : "cloud";
   } catch {
     answerModelLabel = null;
   }
+  setQdrantChip(null);
   try {
     const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
     setModelsReady(!!state?.modelsReady);
@@ -255,17 +286,17 @@ async function refreshModelStatus() {
   }
 }
 function setModelsReady(ready) {
-  el.modelBanner.classList.toggle("ready", ready);
-  el.loadModelsBtn.hidden = ready;
-  if (answerModelLabel) {
-    el.loadModelsBtn.textContent = "Load embedding model (~70 MB)";
-    el.modelStatusText.textContent = ready ? `Ready. Answers by ${answerModelLabel}; embeddings run locally.` : `Answers by ${answerModelLabel}. Embedding model loads on first use.`;
-  } else {
-    el.loadModelsBtn.textContent = "Load local models (~0.6 GB, one-time)";
-    el.modelStatusText.textContent = ready ? "Models loaded and running locally." : "Local answer model not loaded yet.";
-  }
+  el.modelStatusText.textContent = answerModelLabel ? `Answers: ${answerModelLabel}` : "Answers: on this device";
+  el.modelBanner.hidden = !!answerModelLabel || ready;
+  if (ready) el.modelProgress.hidden = true;
+}
+function setQdrantChip(healthy) {
+  const dot = el.qdrantChip.querySelector(".dot");
+  dot.className = `dot ${healthy === true ? "ok" : healthy === false ? "bad" : ""}`;
+  el.qdrantChipText.textContent = healthy === null ? "Qdrant: checking..." : `Qdrant: ${qdrantLocation}${healthy ? "" : " (unreachable)"}`;
 }
 async function checkQdrantHealth() {
+  setQdrantChip(null);
   const attempts = 6;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -285,9 +316,10 @@ async function checkQdrantHealth() {
   return false;
 }
 function setQdrantHealthy(healthy, res) {
+  setQdrantChip(!!healthy);
   el.qdrantBanner.hidden = !!healthy;
   if (!healthy) {
-    el.qdrantStatusText.textContent = `Can't reach Qdrant at http://127.0.0.1:6333. Run "docker compose up -d" in the project folder, then click Retry.`;
+    el.qdrantStatusText.textContent = qdrantLocation === "local" ? `Can't reach Qdrant on this computer. Run "docker compose up -d" in the project folder, then click Retry.` : "Can't reach your Qdrant Cloud cluster. Check the URL and API key in Settings, then click Retry.";
   }
 }
 async function loadModels() {
@@ -322,6 +354,15 @@ function renderCitations(citations, workingSet) {
     li.appendChild(indexedAt);
     const openTab = workingSet.find((t) => t.sourceKey === c.sourceKey);
     if (openTab) {
+      a.addEventListener("click", async (e) => {
+        e.preventDefault();
+        try {
+          const tab = await chrome.tabs.update(openTab.tabId, { active: true });
+          await chrome.windows.update(tab.windowId, { focused: true });
+        } catch {
+          chrome.tabs.create({ url: c.tabUrl });
+        }
+      });
       const checkBtn = document.createElement("button");
       checkBtn.className = "secondary";
       checkBtn.textContent = "Check freshness";
@@ -390,8 +431,10 @@ async function askQuestion() {
 }
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "MODEL_PROGRESS") {
-    el.modelStatusText.textContent = typeof message.detail === "string" ? message.detail : `Loading ${message.stage}...`;
-    if (indexingTabId !== null) el.addTabBtn.textContent = el.modelStatusText.textContent;
+    const text = typeof message.detail === "string" ? message.detail : `Loading ${message.stage}...`;
+    el.modelProgress.hidden = false;
+    el.modelProgress.textContent = text;
+    if (indexingTabId !== null) el.addTabBtn.textContent = text;
   } else if (message.type === "INDEX_PROGRESS") {
     if (message.tabId === indexingTabId) {
       el.addTabBtn.textContent = message.stage === "saving" ? "Saving..." : `Indexing ${message.done}/${message.total}...`;
@@ -399,7 +442,8 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.type === "MODELS_READY") {
     setModelsReady(true);
   } else if (message.type === "MODEL_ERROR") {
-    el.modelStatusText.textContent = `Model load failed: ${message.error}`;
+    el.modelProgress.hidden = false;
+    el.modelProgress.textContent = `Model load failed: ${message.error}`;
     el.loadModelsBtn.hidden = false;
     el.loadModelsBtn.disabled = false;
     el.loadModelsBtn.textContent = "Retry load";
@@ -439,6 +483,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 el.addTabBtn.addEventListener("click", addCurrentTab);
+el.addAllBtn.addEventListener("click", addAllTabs);
+el.qdrantChip.addEventListener("click", checkQdrantHealth);
+el.modelChip.addEventListener("click", () => chrome.runtime.openOptionsPage());
 el.loadModelsBtn.addEventListener("click", loadModels);
 el.askBtn.addEventListener("click", askQuestion);
 el.qdrantRetryBtn.addEventListener("click", checkQdrantHealth);

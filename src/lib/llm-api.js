@@ -17,23 +17,32 @@ const STREAM_TEMPERATURE = 0.3;
 // ─── OpenAI-compatible (OpenAI, Groq) ────────────────────────────────────────
 
 async function openAIRequest(messages, { apiKey, model, baseUrl, stream = false, responseFormat }) {
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE,
-      stream,
-      ...(responseFormat ? { response_format: responseFormat } : {}),
-    }),
-  });
+  const send = (withTemperature) =>
+    fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        ...(withTemperature ? { temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE } : {}),
+        stream,
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+      }),
+    });
 
+  let res = await send(true);
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
+    let text = await res.text().catch(() => res.statusText);
+    // Some newer models only accept their default temperature and reject the parameter with a
+    // 400. Retry once without it rather than making those models unusable.
+    if (res.status === 400 && /temperature/i.test(text)) {
+      res = await send(false);
+      if (res.ok) return res;
+      text = await res.text().catch(() => res.statusText);
+    }
     throw new Error(`${baseUrl} API error ${res.status}: ${text}`);
   }
   return res;
@@ -83,7 +92,7 @@ async function geminiRequest(messages, { apiKey, model, stream = false }) {
 
 function resolveModel(provider, model) {
   if (model) return model;
-  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-4o-mini";
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
 }
 
 function providerBaseUrl(provider) {
@@ -91,6 +100,49 @@ function providerBaseUrl(provider) {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+// Checks an API key (and, when the provider lists them, the chosen model) with a cheap
+// authenticated GET, without spending tokens. Returns { ok, message }. `ok` is false only when
+// the key is rejected or the provider can't be reached; an unlisted model is reported as a
+// warning in `message` with ok still true, since model lists can lag behind new releases.
+export async function testApiKey({ provider, apiKey, model }) {
+  if (!apiKey) return { ok: false, message: "Enter an API key first." };
+  const resolvedModel = resolveModel(provider, model);
+  let url;
+  let headers = {};
+  if (provider === "gemini") {
+    url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=1000`;
+  } else if (providerBaseUrl(provider)) {
+    url = `${providerBaseUrl(provider)}/models`;
+    headers = { Authorization: `Bearer ${apiKey}` };
+  } else {
+    return { ok: false, message: `Unknown provider "${provider}".` };
+  }
+
+  let res;
+  try {
+    res = await fetch(url, { headers });
+  } catch (err) {
+    return { ok: false, message: "Couldn't reach the provider. Check your connection." };
+  }
+  if (res.status === 401 || res.status === 403 || (provider === "gemini" && res.status === 400)) {
+    return { ok: false, message: "The provider rejected this key." };
+  }
+  if (!res.ok) return { ok: false, message: `The provider returned an error (${res.status}).` };
+
+  try {
+    const json = await res.json();
+    const ids = provider === "gemini"
+      ? (json.models || []).map((m) => String(m.name).replace(/^models\//, ""))
+      : (json.data || []).map((m) => m.id);
+    if (ids.length && !ids.includes(resolvedModel)) {
+      return { ok: true, message: `Key works, but "${resolvedModel}" isn't in this account's model list.` };
+    }
+  } catch {
+    // Unparseable list: the key was accepted, which is what was asked.
+  }
+  return { ok: true, message: `Key works. Using ${resolvedModel}.` };
+}
 
 // Non-streaming chat call for the agent's internal decisions (query planning, sufficiency
 // checks). Returns the raw text content of the model's reply.

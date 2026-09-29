@@ -61,7 +61,7 @@
           <label>
             <input type="radio" name="llmType" value="local" />
             <strong>Local (WebLLM)</strong>
-            <div class="radio-hint">Private, on-device. Requires a capable GPU and ~1.5GB model download.</div>
+            <div class="radio-hint">Private, on-device. Requires a capable GPU and ~0.5 GB one-time model download.</div>
           </label>
         </div>
 
@@ -82,7 +82,11 @@
           <div class="field">
             <label for="llm-model">Model (Optional)</label>
             <input type="text" id="llm-model" placeholder="Leave blank for default" />
-            <div class="field-hint" id="llm-model-hint">Default: gpt-4o-mini</div>
+            <div class="field-hint" id="llm-model-hint">Default: gpt-6-luna</div>
+          </div>
+          <div class="test-row">
+            <button id="test-llm-btn" class="secondary">Test key</button>
+            <span id="llm-status" class="status-badge"></span>
           </div>
         </div>
 

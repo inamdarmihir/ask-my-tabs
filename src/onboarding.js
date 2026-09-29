@@ -1,5 +1,8 @@
 import { saveConfig, OPENAI_COMPATIBLE_PROVIDERS, GEMINI_PROVIDER } from "./lib/config.js";
 import { makeClient } from "./lib/qdrant.js";
+import { testApiKey } from "./lib/llm-api.js";
+
+const LOCAL_QDRANT_URL = "http://127.0.0.1:6333";
 
 const ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
 
@@ -17,6 +20,11 @@ const el = {
   llmProvider: document.getElementById("ob-llm-provider"),
   llmApiKey: document.getElementById("ob-llm-apikey"),
   llmKeyUrl: document.getElementById("ob-llm-key-url"),
+  llmModel: document.getElementById("ob-llm-model"),
+  llmModelHint: document.getElementById("ob-llm-model-hint"),
+  testLlmBtn: document.getElementById("ob-test-llm-btn"),
+  llmStatus: document.getElementById("ob-llm-status"),
+  qdrantDetected: document.getElementById("ob-qdrant-detected"),
   step2Btn: document.getElementById("ob-step2-btn"),
   step2Card: document.getElementById("step-2"),
 
@@ -40,11 +48,41 @@ function updateLLMProviderHints() {
   if (!config) return;
   el.llmApiKey.placeholder = config.keyHint;
   el.llmKeyUrl.href = config.keyUrl;
+  el.llmModelHint.textContent = `Default: ${config.defaultModel}`;
+  el.llmStatus.textContent = "";
+}
+
+async function handleTestLLM() {
+  el.testLlmBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Testing...";
+  const r = await testApiKey({
+    provider: el.llmProvider.value,
+    apiKey: el.llmApiKey.value.trim(),
+    model: el.llmModel.value.trim(),
+  });
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = `${r.ok ? "✓" : "✗"} ${r.message}`;
+  el.testLlmBtn.disabled = false;
+}
+
+// If Qdrant is already running locally, preselect it so most local users just click Continue.
+async function detectLocalQdrant() {
+  try {
+    const res = await makeClient({ url: LOCAL_QDRANT_URL }).health();
+    if (res.reachable && res.ready) {
+      document.querySelector('input[name="obQdrantMode"][value="local"]').checked = true;
+      el.qdrantDetected.hidden = false;
+      updateQdrantVisibility();
+    }
+  } catch {
+    // not running locally: leave the default (cloud) selected
+  }
 }
 
 async function handleStep1() {
   const mode = document.querySelector('input[name="obQdrantMode"]:checked').value;
-  const url = mode === "local" ? "http://127.0.0.1:6333" : el.qdrantUrl.value.trim();
+  const url = mode === "local" ? LOCAL_QDRANT_URL : el.qdrantUrl.value.trim();
   const apiKey = mode === "local" ? "" : el.qdrantApiKey.value.trim();
 
   if (mode === "cloud" && !url) {
@@ -71,10 +109,8 @@ async function handleStep1() {
       await chrome.runtime.sendMessage({ type: "SET_CONFIG", patch });
 
       // Unlock Step 2
-      el.step1Card.style.opacity = "0.7";
-      el.step2Card.style.opacity = "1";
-      el.step2Card.style.pointerEvents = "auto";
-      el.step1Btn.style.display = "none";
+      el.step2Card.classList.remove("locked");
+      el.step1Btn.hidden = true;
     } else {
       el.qdrantStatus.className = "status-badge error";
       el.qdrantStatus.textContent = "Connection failed";
@@ -95,7 +131,7 @@ async function handleStep2() {
   const patch = {
     llmProvider: type === "local" ? "webllm" : el.llmProvider.value,
     llmApiKey: type === "local" ? "" : el.llmApiKey.value.trim(),
-    llmModel: "", // Use defaults
+    llmModel: type === "local" ? "" : el.llmModel.value.trim(),
   };
 
   el.step2Btn.disabled = true;
@@ -104,9 +140,9 @@ async function handleStep2() {
   await saveConfig(patch);
   await chrome.runtime.sendMessage({ type: "SET_CONFIG", patch });
 
-  el.step1Card.style.display = "none";
-  el.step2Card.style.display = "none";
-  el.step3Card.style.display = "block";
+  el.step1Card.hidden = true;
+  el.step2Card.hidden = true;
+  el.step3Card.hidden = false;
 }
 
 // Event Listeners
@@ -115,6 +151,7 @@ el.llmTypeRadios.forEach(r => r.addEventListener("change", updateLLMVisibility))
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.step1Btn.addEventListener("click", handleStep1);
 el.step2Btn.addEventListener("click", handleStep2);
+el.testLlmBtn.addEventListener("click", handleTestLLM);
 
 el.doneBtn.addEventListener("click", () => {
   window.close();
@@ -125,4 +162,5 @@ document.addEventListener("DOMContentLoaded", () => {
   updateQdrantVisibility();
   updateLLMVisibility();
   updateLLMProviderHints();
+  detectLocalQdrant();
 });

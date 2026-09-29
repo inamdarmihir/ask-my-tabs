@@ -4,7 +4,7 @@ var OPENAI_COMPATIBLE_PROVIDERS = {
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "gpt-6-luna",
     keyHint: "sk-...",
     keyUrl: "https://platform.openai.com/api-keys"
   },
@@ -313,6 +313,48 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
   };
 }
 
+// src/lib/llm-api.js
+function resolveModel(provider, model) {
+  if (model) return model;
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
+}
+function providerBaseUrl(provider) {
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
+}
+async function testApiKey({ provider, apiKey, model }) {
+  if (!apiKey) return { ok: false, message: "Enter an API key first." };
+  const resolvedModel = resolveModel(provider, model);
+  let url;
+  let headers = {};
+  if (provider === "gemini") {
+    url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=1000`;
+  } else if (providerBaseUrl(provider)) {
+    url = `${providerBaseUrl(provider)}/models`;
+    headers = { Authorization: `Bearer ${apiKey}` };
+  } else {
+    return { ok: false, message: `Unknown provider "${provider}".` };
+  }
+  let res;
+  try {
+    res = await fetch(url, { headers });
+  } catch (err) {
+    return { ok: false, message: "Couldn't reach the provider. Check your connection." };
+  }
+  if (res.status === 401 || res.status === 403 || provider === "gemini" && res.status === 400) {
+    return { ok: false, message: "The provider rejected this key." };
+  }
+  if (!res.ok) return { ok: false, message: `The provider returned an error (${res.status}).` };
+  try {
+    const json = await res.json();
+    const ids = provider === "gemini" ? (json.models || []).map((m) => String(m.name).replace(/^models\//, "")) : (json.data || []).map((m) => m.id);
+    if (ids.length && !ids.includes(resolvedModel)) {
+      return { ok: true, message: `Key works, but "${resolvedModel}" isn't in this account's model list.` };
+    }
+  } catch {
+  }
+  return { ok: true, message: `Key works. Using ${resolvedModel}.` };
+}
+
 // src/settings.js
 var ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
 var el = {
@@ -330,6 +372,8 @@ var el = {
   llmModel: document.getElementById("llm-model"),
   llmModelHint: document.getElementById("llm-model-hint"),
   llmKeyUrl: document.getElementById("llm-key-url"),
+  testLlmBtn: document.getElementById("test-llm-btn"),
+  llmStatus: document.getElementById("llm-status"),
   saveBtn: document.getElementById("save-btn"),
   saveStatus: document.getElementById("save-status"),
   resetBtn: document.getElementById("reset-btn")
@@ -350,6 +394,20 @@ function updateLLMProviderHints() {
   el.llmModelHint.textContent = `Default: ${config.defaultModel}`;
   el.llmApiKey.placeholder = config.keyHint;
   el.llmKeyUrl.href = config.keyUrl;
+  el.llmStatus.textContent = "";
+}
+async function handleTestLLM() {
+  el.testLlmBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Testing...";
+  const r = await testApiKey({
+    provider: el.llmProvider.value,
+    apiKey: el.llmApiKey.value.trim(),
+    model: el.llmModel.value.trim()
+  });
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = `${r.ok ? "\u2713" : "\u2717"} ${r.message}`;
+  el.testLlmBtn.disabled = false;
 }
 async function loadSettings() {
   const cfg = await getConfig();
@@ -423,6 +481,7 @@ el.qdrantModeRadios.forEach((r) => r.addEventListener("change", updateQdrantVisi
 el.llmTypeRadios.forEach((r) => r.addEventListener("change", updateLLMVisibility));
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.testQdrantBtn.addEventListener("click", handleTestQdrant);
+el.testLlmBtn.addEventListener("click", handleTestLLM);
 el.saveBtn.addEventListener("click", handleSave);
 el.resetBtn.addEventListener("click", async (e) => {
   e.preventDefault();

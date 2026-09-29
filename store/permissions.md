@@ -12,7 +12,7 @@ Chrome Web Store reviewers require explicit justification for every permission r
 **Why it's needed:** Used to store the user's API keys (Qdrant Cloud, OpenAI/Gemini), their chosen LLM model, and the list of tabs they currently have in their "working set" (which resets when tabs are closed).
 
 ## `offscreen`
-**Why it's needed:** The extension runs AI models (an embedding model, and optionally a 1.5B parameter language model via WebGPU) locally in the browser. These models take seconds to load and consume significant memory. The offscreen document allows these models to load once per browser session and stay resident in the background, rather than forcing the user to wait for a 1.5GB model to load every time they open the popup.
+**Why it's needed:** The extension runs AI models locally in the browser: a small embedding model that indexes pages, and optionally a small language model (about 0.5 GB) via WebGPU. These models take seconds to load and use significant memory. The offscreen document lets them load once per browser session and stay resident, instead of reloading every time the user opens the popup.
 
 ## Host Permissions: `<all_urls>`
 **Why it's needed:** The user can add *any* tab they are reading to their personal knowledge base. The `scripting` permission requires host access to the URL it is injecting into.

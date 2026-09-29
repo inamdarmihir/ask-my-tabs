@@ -1,6 +1,6 @@
 import { getConfig, saveConfig, DEFAULT_CONFIG, OPENAI_COMPATIBLE_PROVIDERS, GEMINI_PROVIDER } from "./lib/config.js";
 import { makeClient } from "./lib/qdrant.js";
-import { chatJSONApi } from "./lib/llm-api.js";
+import { testApiKey } from "./lib/llm-api.js";
 
 const ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
 
@@ -20,6 +20,8 @@ const el = {
   llmModel: document.getElementById("llm-model"),
   llmModelHint: document.getElementById("llm-model-hint"),
   llmKeyUrl: document.getElementById("llm-key-url"),
+  testLlmBtn: document.getElementById("test-llm-btn"),
+  llmStatus: document.getElementById("llm-status"),
 
   saveBtn: document.getElementById("save-btn"),
   saveStatus: document.getElementById("save-status"),
@@ -44,6 +46,21 @@ function updateLLMProviderHints() {
   el.llmModelHint.textContent = `Default: ${config.defaultModel}`;
   el.llmApiKey.placeholder = config.keyHint;
   el.llmKeyUrl.href = config.keyUrl;
+  el.llmStatus.textContent = "";
+}
+
+async function handleTestLLM() {
+  el.testLlmBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Testing...";
+  const r = await testApiKey({
+    provider: el.llmProvider.value,
+    apiKey: el.llmApiKey.value.trim(),
+    model: el.llmModel.value.trim(),
+  });
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = `${r.ok ? "✓" : "✗"} ${r.message}`;
+  el.testLlmBtn.disabled = false;
 }
 
 async function loadSettings() {
@@ -135,6 +152,7 @@ el.qdrantModeRadios.forEach(r => r.addEventListener("change", updateQdrantVisibi
 el.llmTypeRadios.forEach(r => r.addEventListener("change", updateLLMVisibility));
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.testQdrantBtn.addEventListener("click", handleTestQdrant);
+el.testLlmBtn.addEventListener("click", handleTestLLM);
 el.saveBtn.addEventListener("click", handleSave);
 
 el.resetBtn.addEventListener("click", async (e) => {

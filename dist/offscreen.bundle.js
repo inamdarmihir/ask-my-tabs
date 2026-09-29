@@ -70505,7 +70505,7 @@ var OPENAI_COMPATIBLE_PROVIDERS = {
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "gpt-6-luna",
     keyHint: "sk-...",
     keyUrl: "https://platform.openai.com/api-keys"
   },
@@ -70553,7 +70553,7 @@ async function getConfig() {
 var JSON_TEMPERATURE = 0.2;
 var STREAM_TEMPERATURE = 0.3;
 async function openAIRequest(messages, { apiKey, model, baseUrl, stream = false, responseFormat }) {
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const send = (withTemperature) => fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -70562,13 +70562,19 @@ async function openAIRequest(messages, { apiKey, model, baseUrl, stream = false,
     body: JSON.stringify({
       model,
       messages,
-      temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE,
+      ...withTemperature ? { temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE } : {},
       stream,
       ...responseFormat ? { response_format: responseFormat } : {}
     })
   });
+  let res = await send(true);
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
+    let text = await res.text().catch(() => res.statusText);
+    if (res.status === 400 && /temperature/i.test(text)) {
+      res = await send(false);
+      if (res.ok) return res;
+      text = await res.text().catch(() => res.statusText);
+    }
     throw new Error(`${baseUrl} API error ${res.status}: ${text}`);
   }
   return res;
@@ -70605,7 +70611,7 @@ async function geminiRequest(messages, { apiKey, model, stream = false }) {
 }
 function resolveModel(provider, model) {
   if (model) return model;
-  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-4o-mini";
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
 }
 function providerBaseUrl(provider) {
   return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;

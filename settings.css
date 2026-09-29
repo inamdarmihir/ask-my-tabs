@@ -281,3 +281,16 @@ button.large {
 
 /* Author display rules (e.g. .banner { display: flex }) override the UA [hidden] style. */
 [hidden] { display: none !important; }
+
+/* Onboarding */
+.ob-header { text-align: center; }
+.ob-header img { vertical-align: middle; margin-right: 8px; }
+.ob-header h1 { display: inline-block; vertical-align: middle; margin-top: 4px; }
+.ob-header .tagline { margin-top: 8px; }
+.card.locked { opacity: 0.5; pointer-events: none; }
+.actions-row.end { justify-content: flex-end; gap: 12px; }
+.detected { color: var(--success); font-weight: 600; margin: 0 0 12px; }
+.optional { color: var(--muted); font-weight: 400; }
+.done-card { text-align: center; padding: 40px 24px; }
+.done-card h2 { font-size: 24px; color: var(--success); margin-bottom: 16px; }
+.howto { text-align: left; max-width: 420px; margin: 0 auto 20px; padding-left: 20px; line-height: 1.7; }

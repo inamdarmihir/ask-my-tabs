@@ -199,6 +199,18 @@ tablet/iPad." Findings, verified rather than assumed:
   gets full recall, and library scope (unknown source count) uses 2.
 - Payload indexes on `sourceKey`, `domain`, `indexedAt`, etc. already existed and were kept.
 
+## Embedding model selection rule (written before running the eval)
+
+Candidates: `Xenova/bge-small-en-v1.5` and `MongoDB/mdbr-leaf-ir`, each in fp16 and q8, scored by
+`npm run eval` (`eval/run-eval.js`) on BEIR SciFact through the real chunking, sparse-vector and
+Qdrant query code, in dense-only, sparse-only and hybrid modes. **Rule:** among configurations
+whose **hybrid nDCG@10 is within 0.010 (1.0 point) of the best configuration**, pick the one with
+the smallest model file on disk (it is bundled inside the extension and loaded on every browser
+start); ties go to the higher nDCG@10. The default hybrid weights are not tuned in this run.
+A candidate whose dense-only score is implausibly low (< 0.5 x the best dense score) is treated as
+a broken export (e.g. a missing projection layer) and excluded, not ranked. Results and the
+decision are recorded in `eval/RESULTS.md`.
+
 ## Findings moved from the README
 
 - **Embedding precision.** `dtype: "q8"` loaded about three times faster but silently broke

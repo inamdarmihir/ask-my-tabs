@@ -41,7 +41,7 @@ var init_config = __esm({
       openai: {
         label: "OpenAI",
         baseUrl: "https://api.openai.com/v1",
-        defaultModel: "gpt-4o-mini",
+        defaultModel: "gpt-6-luna",
         keyHint: "sk-...",
         keyUrl: "https://platform.openai.com/api-keys"
       },

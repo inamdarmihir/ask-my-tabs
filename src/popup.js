@@ -8,6 +8,11 @@ const WORKING_SET_KEY = "workingSet";
 const el = {
   modelBanner: document.getElementById("model-banner"),
   modelStatusText: document.getElementById("model-status-text"),
+  modelChip: document.getElementById("model-chip"),
+  modelProgress: document.getElementById("model-progress"),
+  qdrantChip: document.getElementById("qdrant-chip"),
+  qdrantChipText: document.getElementById("qdrant-chip-text"),
+  addAllBtn: document.getElementById("add-all-btn"),
   loadModelsBtn: document.getElementById("load-models-btn"),
   qdrantBanner: document.getElementById("qdrant-banner"),
   qdrantStatusText: document.getElementById("qdrant-status-text"),
@@ -102,6 +107,34 @@ async function addCurrentTab() {
   }
 }
 
+// Indexes every http(s) tab in the current window, one at a time (the embedder is single-
+// threaded, so parallel adds would only queue), and reports how many succeeded.
+async function addAllTabs() {
+  const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => /^https?:\/\//.test(t.url || ""));
+  if (tabs.length === 0) return;
+  el.addTabBtn.disabled = true;
+  el.addAllBtn.disabled = true;
+  el.timingNote.hidden = true;
+  const started = performance.now();
+  let added = 0;
+  const failures = [];
+  for (let i = 0; i < tabs.length; i++) {
+    el.addAllBtn.textContent = `Adding ${i + 1}/${tabs.length}...`;
+    const res = await sendToBackground({ type: "INDEX_TAB", tabId: tabs[i].id }).catch((e) => ({ ok: false, error: String(e) }));
+    if (res?.ok) added += 1;
+    else failures.push(res?.error || "unknown error");
+  }
+  renderWorkingSet(await getWorkingSet());
+  refreshLibrary();
+  el.timingNote.hidden = false;
+  el.timingNote.textContent =
+    `Added ${added} of ${tabs.length} pages in ${formatMs(performance.now() - started)}` +
+    (failures.length ? `. First problem: ${failures[0]}` : ".");
+  el.addTabBtn.disabled = false;
+  el.addAllBtn.disabled = false;
+  el.addAllBtn.textContent = "Add all";
+}
+
 function formatDate(ms) {
   if (!ms) return "unknown date";
   return new Date(ms).toLocaleString();
@@ -180,19 +213,23 @@ async function deleteFromLibrary(source) {
   refreshLibrary();
 }
 
-// Which answer model is active, so the banner can say so. A hosted provider only needs the
-// small local embedding model; only WebLLM needs the large download. Showing this also makes a
-// misconfiguration (API key entered but "Local" still selected) visible at a glance.
-let answerModelLabel = null; // null = WebLLM (local)
+// Which answer model is active, so the chip can say so. A hosted provider only needs the small
+// embedding model (loaded automatically); only the on-device LLM needs an explicit big download.
+// Showing this also makes a misconfiguration (API key entered but "on device" still selected)
+// visible at a glance.
+let answerModelLabel = null; // null = on-device (WebLLM)
+let qdrantLocation = "local";
 
 async function refreshModelStatus() {
   try {
     const cfg = await getConfig();
     const provider = ALL_API_PROVIDERS[cfg.llmProvider];
-    answerModelLabel = provider ? `${provider.label} (${cfg.llmModel || provider.defaultModel})` : null;
+    answerModelLabel = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : null;
+    qdrantLocation = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(cfg.qdrantUrl) ? "local" : "cloud";
   } catch {
     answerModelLabel = null;
   }
+  setQdrantChip(null);
   try {
     const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
     setModelsReady(!!state?.modelsReady);
@@ -202,19 +239,18 @@ async function refreshModelStatus() {
 }
 
 function setModelsReady(ready) {
-  el.modelBanner.classList.toggle("ready", ready);
-  el.loadModelsBtn.hidden = ready;
-  if (answerModelLabel) {
-    el.loadModelsBtn.textContent = "Load embedding model (~70 MB)";
-    el.modelStatusText.textContent = ready
-      ? `Ready. Answers by ${answerModelLabel}; embeddings run locally.`
-      : `Answers by ${answerModelLabel}. Embedding model loads on first use.`;
-  } else {
-    el.loadModelsBtn.textContent = "Load local models (~0.6 GB, one-time)";
-    el.modelStatusText.textContent = ready
-      ? "Models loaded and running locally."
-      : "Local answer model not loaded yet.";
-  }
+  el.modelStatusText.textContent = answerModelLabel ? `Answers: ${answerModelLabel}` : "Answers: on this device";
+  // Only the on-device LLM needs a manual download; hosted providers just use the embedder.
+  el.modelBanner.hidden = !!answerModelLabel || ready;
+  if (ready) el.modelProgress.hidden = true;
+}
+
+// null = checking, true = up, false = down.
+function setQdrantChip(healthy) {
+  const dot = el.qdrantChip.querySelector(".dot");
+  dot.className = `dot ${healthy === true ? "ok" : healthy === false ? "bad" : ""}`;
+  el.qdrantChipText.textContent =
+    healthy === null ? "Qdrant: checking..." : `Qdrant: ${qdrantLocation}${healthy ? "" : " (unreachable)"}`;
 }
 
 // The offscreen bundle is large (~8 MB), so right after ENSURE_OFFSCREEN creates the document its
@@ -222,6 +258,7 @@ function setModelsReady(ready) {
 // not exist". Retry briefly before reporting Qdrant as down, so a slow startup isn't mistaken
 // for an unreachable server.
 async function checkQdrantHealth() {
+  setQdrantChip(null);
   const attempts = 6;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -242,11 +279,13 @@ async function checkQdrantHealth() {
 }
 
 function setQdrantHealthy(healthy, res) {
+  setQdrantChip(!!healthy);
   el.qdrantBanner.hidden = !!healthy;
   if (!healthy) {
     el.qdrantStatusText.textContent =
-      "Can't reach Qdrant at http://127.0.0.1:6333. Run \"docker compose up -d\" in the " +
-      "project folder, then click Retry.";
+      qdrantLocation === "local"
+        ? "Can't reach Qdrant on this computer. Run \"docker compose up -d\" in the project folder, then click Retry."
+        : "Can't reach your Qdrant Cloud cluster. Check the URL and API key in Settings, then click Retry.";
   }
 }
 
@@ -286,6 +325,17 @@ function renderCitations(citations, workingSet) {
 
     const openTab = workingSet.find((t) => t.sourceKey === c.sourceKey);
     if (openTab) {
+      // Jump to the tab that is already open instead of opening a duplicate. preventDefault must
+      // run synchronously (before any await) or the browser has already followed the link.
+      a.addEventListener("click", async (e) => {
+        e.preventDefault();
+        try {
+          const tab = await chrome.tabs.update(openTab.tabId, { active: true });
+          await chrome.windows.update(tab.windowId, { focused: true });
+        } catch {
+          chrome.tabs.create({ url: c.tabUrl }); // tab is gone: open the snapshot's URL instead
+        }
+      });
       const checkBtn = document.createElement("button");
       checkBtn.className = "secondary";
       checkBtn.textContent = "Check freshness";
@@ -369,10 +419,11 @@ async function askQuestion() {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "MODEL_PROGRESS") {
-    el.modelStatusText.textContent =
-      typeof message.detail === "string" ? message.detail : `Loading ${message.stage}...`;
+    const text = typeof message.detail === "string" ? message.detail : `Loading ${message.stage}...`;
+    el.modelProgress.hidden = false;
+    el.modelProgress.textContent = text;
     // Mirror download progress onto the button that is waiting for it.
-    if (indexingTabId !== null) el.addTabBtn.textContent = el.modelStatusText.textContent;
+    if (indexingTabId !== null) el.addTabBtn.textContent = text;
   } else if (message.type === "INDEX_PROGRESS") {
     if (message.tabId === indexingTabId) {
       el.addTabBtn.textContent =
@@ -381,7 +432,8 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.type === "MODELS_READY") {
     setModelsReady(true);
   } else if (message.type === "MODEL_ERROR") {
-    el.modelStatusText.textContent = `Model load failed: ${message.error}`;
+    el.modelProgress.hidden = false;
+    el.modelProgress.textContent = `Model load failed: ${message.error}`;
     // Re-enable the button so a fixable, transient cause (GPU driver update, closing another
     // GPU-heavy tab, retrying after enabling WebGPU in chrome://flags) can actually be retried
     // without closing and reopening the popup.
@@ -428,6 +480,9 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 el.addTabBtn.addEventListener("click", addCurrentTab);
+el.addAllBtn.addEventListener("click", addAllTabs);
+el.qdrantChip.addEventListener("click", checkQdrantHealth);
+el.modelChip.addEventListener("click", () => chrome.runtime.openOptionsPage());
 el.loadModelsBtn.addEventListener("click", loadModels);
 el.askBtn.addEventListener("click", askQuestion);
 el.qdrantRetryBtn.addEventListener("click", checkQdrantHealth);

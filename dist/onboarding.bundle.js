@@ -4,7 +4,7 @@ var OPENAI_COMPATIBLE_PROVIDERS = {
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "gpt-6-luna",
     keyHint: "sk-...",
     keyUrl: "https://platform.openai.com/api-keys"
   },
@@ -313,7 +313,50 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
   };
 }
 
+// src/lib/llm-api.js
+function resolveModel(provider, model) {
+  if (model) return model;
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
+}
+function providerBaseUrl(provider) {
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
+}
+async function testApiKey({ provider, apiKey, model }) {
+  if (!apiKey) return { ok: false, message: "Enter an API key first." };
+  const resolvedModel = resolveModel(provider, model);
+  let url;
+  let headers = {};
+  if (provider === "gemini") {
+    url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=1000`;
+  } else if (providerBaseUrl(provider)) {
+    url = `${providerBaseUrl(provider)}/models`;
+    headers = { Authorization: `Bearer ${apiKey}` };
+  } else {
+    return { ok: false, message: `Unknown provider "${provider}".` };
+  }
+  let res;
+  try {
+    res = await fetch(url, { headers });
+  } catch (err) {
+    return { ok: false, message: "Couldn't reach the provider. Check your connection." };
+  }
+  if (res.status === 401 || res.status === 403 || provider === "gemini" && res.status === 400) {
+    return { ok: false, message: "The provider rejected this key." };
+  }
+  if (!res.ok) return { ok: false, message: `The provider returned an error (${res.status}).` };
+  try {
+    const json = await res.json();
+    const ids = provider === "gemini" ? (json.models || []).map((m) => String(m.name).replace(/^models\//, "")) : (json.data || []).map((m) => m.id);
+    if (ids.length && !ids.includes(resolvedModel)) {
+      return { ok: true, message: `Key works, but "${resolvedModel}" isn't in this account's model list.` };
+    }
+  } catch {
+  }
+  return { ok: true, message: `Key works. Using ${resolvedModel}.` };
+}
+
 // src/onboarding.js
+var LOCAL_QDRANT_URL = "http://127.0.0.1:6333";
 var ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
 var el = {
   qdrantModeRadios: document.querySelectorAll('input[name="obQdrantMode"]'),
@@ -328,6 +371,11 @@ var el = {
   llmProvider: document.getElementById("ob-llm-provider"),
   llmApiKey: document.getElementById("ob-llm-apikey"),
   llmKeyUrl: document.getElementById("ob-llm-key-url"),
+  llmModel: document.getElementById("ob-llm-model"),
+  llmModelHint: document.getElementById("ob-llm-model-hint"),
+  testLlmBtn: document.getElementById("ob-test-llm-btn"),
+  llmStatus: document.getElementById("ob-llm-status"),
+  qdrantDetected: document.getElementById("ob-qdrant-detected"),
   step2Btn: document.getElementById("ob-step2-btn"),
   step2Card: document.getElementById("step-2"),
   step3Card: document.getElementById("step-3"),
@@ -347,10 +395,36 @@ function updateLLMProviderHints() {
   if (!config) return;
   el.llmApiKey.placeholder = config.keyHint;
   el.llmKeyUrl.href = config.keyUrl;
+  el.llmModelHint.textContent = `Default: ${config.defaultModel}`;
+  el.llmStatus.textContent = "";
+}
+async function handleTestLLM() {
+  el.testLlmBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Testing...";
+  const r = await testApiKey({
+    provider: el.llmProvider.value,
+    apiKey: el.llmApiKey.value.trim(),
+    model: el.llmModel.value.trim()
+  });
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = `${r.ok ? "\u2713" : "\u2717"} ${r.message}`;
+  el.testLlmBtn.disabled = false;
+}
+async function detectLocalQdrant() {
+  try {
+    const res = await makeClient({ url: LOCAL_QDRANT_URL }).health();
+    if (res.reachable && res.ready) {
+      document.querySelector('input[name="obQdrantMode"][value="local"]').checked = true;
+      el.qdrantDetected.hidden = false;
+      updateQdrantVisibility();
+    }
+  } catch {
+  }
 }
 async function handleStep1() {
   const mode = document.querySelector('input[name="obQdrantMode"]:checked').value;
-  const url = mode === "local" ? "http://127.0.0.1:6333" : el.qdrantUrl.value.trim();
+  const url = mode === "local" ? LOCAL_QDRANT_URL : el.qdrantUrl.value.trim();
   const apiKey = mode === "local" ? "" : el.qdrantApiKey.value.trim();
   if (mode === "cloud" && !url) {
     el.qdrantStatus.className = "status-badge error";
@@ -370,10 +444,8 @@ async function handleStep1() {
       const patch = { qdrantUrl: url, qdrantApiKey: apiKey };
       await saveConfig(patch);
       await chrome.runtime.sendMessage({ type: "SET_CONFIG", patch });
-      el.step1Card.style.opacity = "0.7";
-      el.step2Card.style.opacity = "1";
-      el.step2Card.style.pointerEvents = "auto";
-      el.step1Btn.style.display = "none";
+      el.step2Card.classList.remove("locked");
+      el.step1Btn.hidden = true;
     } else {
       el.qdrantStatus.className = "status-badge error";
       el.qdrantStatus.textContent = "Connection failed";
@@ -392,22 +464,22 @@ async function handleStep2() {
   const patch = {
     llmProvider: type === "local" ? "webllm" : el.llmProvider.value,
     llmApiKey: type === "local" ? "" : el.llmApiKey.value.trim(),
-    llmModel: ""
-    // Use defaults
+    llmModel: type === "local" ? "" : el.llmModel.value.trim()
   };
   el.step2Btn.disabled = true;
   el.step2Btn.textContent = "Saving...";
   await saveConfig(patch);
   await chrome.runtime.sendMessage({ type: "SET_CONFIG", patch });
-  el.step1Card.style.display = "none";
-  el.step2Card.style.display = "none";
-  el.step3Card.style.display = "block";
+  el.step1Card.hidden = true;
+  el.step2Card.hidden = true;
+  el.step3Card.hidden = false;
 }
 el.qdrantModeRadios.forEach((r) => r.addEventListener("change", updateQdrantVisibility));
 el.llmTypeRadios.forEach((r) => r.addEventListener("change", updateLLMVisibility));
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.step1Btn.addEventListener("click", handleStep1);
 el.step2Btn.addEventListener("click", handleStep2);
+el.testLlmBtn.addEventListener("click", handleTestLLM);
 el.doneBtn.addEventListener("click", () => {
   window.close();
 });
@@ -415,4 +487,5 @@ document.addEventListener("DOMContentLoaded", () => {
   updateQdrantVisibility();
   updateLLMVisibility();
   updateLLMProviderHints();
+  detectLocalQdrant();
 });

@@ -70,7 +70,7 @@ All settings live in the extension's Settings page and are stored in `chrome.sto
 | Provider | Default model | Requirements |
 | --- | --- | --- |
 | **On-device (WebLLM)** (default) | `Qwen3-0.6B-q4f16_1-MLC` (thinking disabled) | WebGPU, ~0.5 GB one-time download |
-| OpenAI | `gpt-4o-mini` | API key |
+| OpenAI | `gpt-6-luna` | API key |
 | Groq | `llama-3.3-70b-versatile` | API key |
 | Google Gemini | `gemini-1.5-flash` | API key |
 

@@ -6,17 +6,24 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header>
-      <div class="header-row">
-        <h1>Ask My Tabs</h1>
-        <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
-      </div>
-      <p class="tagline">Private Q&amp;A over your tabs — local or Qdrant Cloud.</p>
+    <header class="header-row">
+      <h1>Ask My Tabs</h1>
+      <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
     </header>
 
-    <section id="model-banner" class="banner">
-      <span id="model-status-text">Models not loaded yet.</span>
-      <button id="load-models-btn">Load models</button>
+    <div class="status-row">
+      <button id="qdrant-chip" class="chip" title="Vector database. Click to re-check the connection.">
+        <span class="dot"></span><span id="qdrant-chip-text">Qdrant</span>
+      </button>
+      <button id="model-chip" class="chip" title="Answer model. Click to change it in Settings.">
+        <span class="dot ok"></span><span id="model-status-text">Answers</span>
+      </button>
+    </div>
+    <p id="model-progress" class="progress-note" hidden></p>
+
+    <section id="model-banner" class="banner" hidden>
+      <span>The on-device answer model isn't downloaded yet (about 0.5 GB, one time).</span>
+      <button id="load-models-btn">Download</button>
     </section>
 
     <section id="qdrant-banner" class="banner banner-error" hidden>
@@ -24,23 +31,45 @@
       <button id="qdrant-retry-btn">Retry</button>
     </section>
 
+    <section id="ask-section">
+      <textarea id="question-input" rows="2" placeholder="Ask a question across your pages..."></textarea>
+      <div class="ask-row">
+        <div class="segmented" role="radiogroup" aria-label="Where to search">
+          <label title="Only the pages listed below"><input type="radio" name="scope" value="working-set" checked /><span>Working set</span></label>
+          <label title="Everything you have ever indexed"><input type="radio" name="scope" value="library" /><span>Whole library</span></label>
+        </div>
+        <button id="ask-btn">Ask</button>
+      </div>
+    </section>
+
+    <section id="status-line" class="status-line" hidden></section>
+
+    <section id="answer-section" hidden>
+      <div id="answer-text"></div>
+      <p id="citation-warning" class="citation-warning" hidden></p>
+      <ol id="citations"></ol>
+      <p class="snapshot-notice">Citations point to stored snapshots, which may differ from the live page.</p>
+    </section>
+    <p id="timing-note" class="timing-note" hidden></p>
+
     <section id="working-set">
       <div class="section-header">
         <h2>Working set</h2>
-        <button id="add-tab-btn">+ Add current tab</button>
+        <div class="button-row">
+          <button id="add-tab-btn">+ Add current tab</button>
+          <button id="add-all-btn" class="secondary" title="Index every web page open in this window">Add all</button>
+        </div>
       </div>
-      <p class="hint">Live tabs to search right now. Removing a tab here only stops searching it
-        -- the indexed copy stays in your library. Use Library below to delete it for real.</p>
       <ul id="tab-list"></ul>
-      <p id="empty-state" class="empty-state">No tabs added yet. Add a few, then ask a question.</p>
+      <p id="empty-state" class="empty-state">No pages yet. Add a few, then ask a question.</p>
     </section>
 
-    <section id="library-section">
+    <details id="library-section">
+      <summary><h2>Library</h2></summary>
       <div class="section-header">
-        <h2>Library</h2>
+        <span class="hint" title="Everything indexed, kept in your Qdrant across restarts. Deleting here removes it for good.">Saved across restarts</span>
         <button id="refresh-library-btn" class="secondary">Refresh</button>
       </div>
-      <p class="hint">Everything indexed and persisted across restarts, in your local Qdrant.</p>
       <div id="library-filters" class="filters-row">
         <select id="domain-filter">
           <option value="">All domains</option>
@@ -50,27 +79,7 @@
       </div>
       <ul id="library-list"></ul>
       <p id="library-empty-state" class="empty-state">Nothing in the library yet.</p>
-    </section>
-
-    <section id="ask-section">
-      <textarea id="question-input" rows="2" placeholder="Ask something across your sources..."></textarea>
-      <div class="scope-row">
-        <label><input type="radio" name="scope" value="working-set" checked /> Working set</label>
-        <label><input type="radio" name="scope" value="library" /> Entire library</label>
-      </div>
-      <button id="ask-btn">Ask</button>
-    </section>
-
-    <section id="status-line" class="status-line" hidden></section>
-    <p id="timing-note" class="timing-note" hidden></p>
-
-    <section id="answer-section" hidden>
-      <div id="answer-text"></div>
-      <p id="citation-warning" class="citation-warning" hidden></p>
-      <p class="snapshot-notice">Citations point to stored snapshots, not necessarily the live
-        page. A page can change after it was indexed.</p>
-      <ol id="citations"></ol>
-    </section>
+    </details>
 
     <script type="module" src="dist/popup.bundle.js"></script>
   </body>
