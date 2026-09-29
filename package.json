@@ -12,7 +12,10 @@
   },
   "scripts": {
     "build": "node build.js",
-    "watch": "node build.js --watch"
+    "watch": "node build.js --watch",
+    "test": "node --test tests/unit/*.test.js",
+    "test:integration": "node --test tests/integration/*.test.js",
+    "eval": "node eval/run-eval.js"
   },
   "devDependencies": {
     "esbuild": "^0.23.1"
