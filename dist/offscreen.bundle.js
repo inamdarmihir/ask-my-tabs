@@ -47954,46 +47954,35 @@ var __webpack_exports__window_function = __webpack_exports__.window_function;
 var __webpack_exports__zeros = __webpack_exports__.zeros;
 var __webpack_exports__zeros_like = __webpack_exports__.zeros_like;
 
-// src/lib/gpu.js
-async function hasWebGPU() {
-  if (typeof navigator === "undefined" || !navigator.gpu) return false;
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    return adapter != null;
-  } catch {
-    return false;
-  }
-}
-var WEBGPU_UNAVAILABLE_MESSAGE = `WebGPU isn't available in this Chrome profile (no GPU adapter, or GPU access is disabled by flag/policy). This happens the same way on Windows, macOS, and Linux -- it depends on your machine and Chrome settings, not on which OS you're running. Check chrome://gpu (look for "WebGPU: Hardware accelerated"), update graphics drivers, and confirm your organization hasn't disabled GPU access via policy.`;
+// src/lib/embedding-model.js
+var EMBEDDING_MODEL = {
+  key: "leaf-ir-q8",
+  id: "MongoDB/mdbr-leaf-ir",
+  dtype: "q8",
+  revision: "4262131b32c3182bd06e67e92ae69d7bd66e0c5c",
+  dims: 384,
+  // Instruction prepended to QUERIES only (never documents); see embedQuery in embeddings.js.
+  queryPrefix: "Represent this sentence for searching relevant passages: "
+};
 
 // src/lib/embeddings.js
-__webpack_exports__env.allowLocalModels = false;
+__webpack_exports__env.allowLocalModels = true;
 if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+  __webpack_exports__env.localModelPath = chrome.runtime.getURL("models/");
+  __webpack_exports__env.useBrowserCache = false;
   __webpack_exports__env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("dist/ort/");
-  __webpack_exports__env.backends.onnx.wasm.numThreads = 1;
+  __webpack_exports__env.backends.onnx.wasm.numThreads = self.crossOriginIsolated ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1)) : 1;
 }
-var MODEL_ID = "Xenova/bge-small-en-v1.5";
+var MODEL_ID = EMBEDDING_MODEL.id;
+var DTYPE = EMBEDDING_MODEL.dtype;
 var extractorPromise = null;
 async function getExtractor(onProgress) {
   if (!extractorPromise) {
-    extractorPromise = (async () => {
-      if (await hasWebGPU()) {
-        try {
-          return await __webpack_exports__pipeline("feature-extraction", MODEL_ID, {
-            device: "webgpu",
-            dtype: "fp16",
-            progress_callback: onProgress
-          });
-        } catch (err) {
-          console.warn("[embeddings] WebGPU init failed despite an adapter being present, falling back to WASM:", err);
-        }
-      }
-      return await __webpack_exports__pipeline("feature-extraction", MODEL_ID, {
-        device: "wasm",
-        dtype: "fp16",
-        progress_callback: onProgress
-      });
-    })().catch((err) => {
+    extractorPromise = __webpack_exports__pipeline("feature-extraction", MODEL_ID, {
+      device: "wasm",
+      dtype: DTYPE,
+      progress_callback: onProgress
+    }).catch((err) => {
       extractorPromise = null;
       throw err;
     });
@@ -48014,9 +48003,8 @@ async function embed(texts, onProgress) {
   }
   return vectors;
 }
-var BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 async function embedQuery(texts, onProgress) {
-  const prefixed = texts.map((t) => `${BGE_QUERY_PREFIX}${t}`);
+  const prefixed = texts.map((t) => `${EMBEDDING_MODEL.queryPrefix}${t}`);
   return embed(prefixed, onProgress);
 }
 
@@ -70448,6 +70436,18 @@ var MLCEngine = class {
   }
 };
 
+// src/lib/gpu.js
+async function hasWebGPU() {
+  if (typeof navigator === "undefined" || !navigator.gpu) return false;
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    return adapter != null;
+  } catch {
+    return false;
+  }
+}
+var WEBGPU_UNAVAILABLE_MESSAGE = `WebGPU isn't available in this Chrome profile (no GPU adapter, or GPU access is disabled by flag/policy). This happens the same way on Windows, macOS, and Linux -- it depends on your machine and Chrome settings, not on which OS you're running. Check chrome://gpu (look for "WebGPU: Hardware accelerated"), update graphics drivers, and confirm your organization hasn't disabled GPU access via policy.`;
+
 // src/lib/llm.js
 var MODEL_ID2 = "Qwen3-0.6B-q4f16_1-MLC";
 var NO_THINKING = { enable_thinking: false };
@@ -71483,11 +71483,15 @@ Question: ${question}` }
 }
 
 // src/lib/constants.js
-var LIBRARY_COLLECTION = "ask_my_tabs_library";
+var LIBRARY_COLLECTION_PREFIX = "ask_my_tabs_library";
+function libraryCollectionName(modelKey) {
+  return `${LIBRARY_COLLECTION_PREFIX}__${modelKey}`;
+}
 var DEFAULT_RETRIEVAL_MODE = "hybrid";
 var DEFAULT_FRESHNESS_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1e3;
 
 // src/offscreen.js
+var LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key);
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {
   });

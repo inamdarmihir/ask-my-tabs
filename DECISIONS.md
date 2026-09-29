@@ -211,6 +211,42 @@ A candidate whose dense-only score is implausibly low (< 0.5 x the best dense sc
 a broken export (e.g. a missing projection layer) and excluded, not ranked. Results and the
 decision are recorded in `eval/RESULTS.md`.
 
+### Hybrid weights rule (written after the first eval run, before the second)
+
+The first run showed hybrid at equal RRF weights scoring slightly *below* dense-only for every
+config (about 0.818 vs 0.83), so equal weights may be over-crediting the weaker lexical retriever.
+The eval now also reports hybrid with dense:sparse weights of 2:1 and 3:1. **Rule:** the shipped
+default weights move off 1:1 only if, for the chosen model, one of these beats 1:1 hybrid nDCG@10
+by at least 0.010; if both do, take the smaller weight that is within 0.005 of the better one.
+Otherwise keep 1:1. SciFact is one scientific-abstract corpus, so any change is a modest prior,
+not a tuned optimum for web pages; the weights stay a parameter of `client.query` for that reason.
+
+### Outcome (eval run 2026-09-29, `eval/RESULTS.md`)
+
+- **Model: `MongoDB/mdbr-leaf-ir`, q8, 23 MB**, pinned at revision
+  `4262131b32c3182bd06e67e92ae69d7bd66e0c5c` and bundled in `models/`. All four candidates land
+  within 0.006 hybrid nDCG@10 of each other (0.814-0.820), so the rule reduces to "smallest file",
+  and q8 of LEAF-IR is also the fastest to embed (18 ms/chunk vs 83 for bge-small fp16 in Node).
+  The earlier ad-hoc q8 failure with bge-small did not reproduce on SciFact (0.814 vs 0.818);
+  runs differ by about 0.003 from Qdrant's IDF statistics, so gaps under 0.005 are noise.
+- **Weights: keep 1:1.** Neither 2:1 nor 3:1 beat 1:1 by 0.010 for LEAF-IR q8 (0.816, 0.815 vs
+  0.818).
+- **Honest caveat: hybrid did not beat dense-only on this corpus** (dense 0.835 vs hybrid 0.818
+  for the chosen model). SciFact is scientific abstracts, where paraphrase matches dominate.
+  Hybrid is kept because web pages carry exact identifiers, versions and error strings that
+  lexical matching exists for, but that benefit is not measured here. Retrieval mode remains a
+  setting; a fixture set of real pages with identifier-style queries is the right next eval.
+- **Embeddings run on WASM, not WebGPU.** The q8 model uses integer operators that WebGPU does not
+  reliably support, and the CPU path leaves the GPU to the on-device language model. This is
+  unverified in a real browser (the eval ran on Node/CPU); measure it on first load.
+- **Cross-origin isolation** (`cross_origin_embedder_policy: require-corp`, `same-origin` opener)
+  is enabled in `manifest.json` so the WASM backend can use up to 4 threads. Unverified in Chrome.
+  If any cross-origin request (Qdrant Cloud, an LLM API, the WebLLM model CDN) starts failing,
+  remove those two manifest keys first; the embedder then falls back to one thread.
+- **Collections are keyed by model** (`ask_my_tabs_library__leaf-ir-q8`). The previous
+  `ask_my_tabs_library` collection is left untouched and no longer read; there is no migration
+  (it was empty for the only known install).
+
 ## Findings moved from the README
 
 - **Embedding precision.** `dtype: "q8"` loaded about three times faster but silently broke

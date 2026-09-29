@@ -1,51 +1,43 @@
-// Wraps a small sentence-embedding model running entirely in-browser via transformers.js.
-// bge-small-en-v1.5 is ~33M parameters, 384-dim -- small enough to load in a couple of seconds
-// on WASM and near-instantly on WebGPU, and it's a real retrieval-tuned embedder rather than a
-// general-purpose language model pressed into service as one.
+// Wraps the small sentence-embedding model (see embedding-model.js) running entirely in-browser
+// via transformers.js. The model files ship inside the extension (models/), so indexing needs no
+// network, works offline, and never waits on a Hugging Face download.
 
 import { pipeline, env } from "@huggingface/transformers";
-import { hasWebGPU } from "./gpu.js";
+import { EMBEDDING_MODEL } from "./embedding-model.js";
 
-env.allowLocalModels = false;
+env.allowLocalModels = true;
 
-// Load the ONNX runtime from the extension package (copied to dist/ort/ by build.js) instead of
-// the default CDN, which the extension CSP blocks. Single-threaded: multi-threaded WASM needs
-// cross-origin isolation, which extension pages don't have.
+// Load the ONNX runtime and the model from the extension package instead of a CDN or the Hugging
+// Face hub (the extension CSP blocks the CDN; the runtime is copied to dist/ort/ by build.js and
+// the model to models/ by scripts/fetch-models.js). Remote loading stays allowed only as a
+// fallback if the bundled files are missing. Bundled files skip the browser cache: they are
+// already local, and caching would just duplicate them.
 if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+  env.localModelPath = chrome.runtime.getURL("models/");
+  env.useBrowserCache = false;
   env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("dist/ort/");
-  env.backends.onnx.wasm.numThreads = 1;
+  // Multi-threaded WASM needs cross-origin isolation (see manifest.json); otherwise one thread.
+  env.backends.onnx.wasm.numThreads = self.crossOriginIsolated
+    ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1))
+    : 1;
 }
 
-const MODEL_ID = "Xenova/bge-small-en-v1.5";
+const MODEL_ID = EMBEDDING_MODEL.id;
+const DTYPE = EMBEDDING_MODEL.dtype;
 
 let extractorPromise = null;
 
-// Unlike WebLLM (src/lib/llm.js), the embedder has a real WASM fallback, so lack of WebGPU is
-// not fatal here -- it's just slower. Checking navigator.gpu up front (instead of always trying
-// WebGPU first and catching the failure) avoids a noisy failed-init attempt in the console on
-// every machine without a GPU adapter, which on Windows and Linux without a dGPU is common, not
-// exotic. This is the same code path on every desktop OS; there is nothing OS-specific here.
+// Always WASM. The bundled model is 8-bit quantized (best size/quality/speed in eval/RESULTS.md);
+// quantized integer operators run well on the WASM backend but are not reliably supported by
+// WebGPU, and running on the CPU leaves the GPU free for the on-device language model.
 async function getExtractor(onProgress) {
   if (!extractorPromise) {
-    extractorPromise = (async () => {
-      if (await hasWebGPU()) {
-        try {
-          return await pipeline("feature-extraction", MODEL_ID, {
-            device: "webgpu",
-            dtype: "fp16",
-            progress_callback: onProgress,
-          });
-        } catch (err) {
-          console.warn("[embeddings] WebGPU init failed despite an adapter being present, falling back to WASM:", err);
-        }
-      }
-      return await pipeline("feature-extraction", MODEL_ID, {
-        device: "wasm",
-        dtype: "fp16",
-        progress_callback: onProgress,
-      });
-    })().catch((err) => {
-      extractorPromise = null; // don't cache a failure -- allow retry on the next "Load models" click
+    extractorPromise = pipeline("feature-extraction", MODEL_ID, {
+      device: "wasm",
+      dtype: DTYPE,
+      progress_callback: onProgress,
+    }).catch((err) => {
+      extractorPromise = null; // don't cache a failure -- allow retry on the next attempt
       throw err;
     });
   }
@@ -71,16 +63,15 @@ export async function embed(texts, onProgress) {
   return vectors;
 }
 
-// bge-small-en-v1.5 was trained with a query-time instruction prefix that signals to the model
-// that the input is a search query, not a passage to be indexed. Omitting it at query time
-// measurably degrades query-document alignment (see DECISIONS.md). The prefix is applied here,
-// not at the caller site, so no other module needs to know about it.
+// The model expects a query-time instruction prefix (EMBEDDING_MODEL.queryPrefix) that signals the
+// input is a search query, not a passage to be indexed; the eval applies the same prefix, so
+// omitting it would make production retrieval differ from the measured numbers. The prefix is
+// applied here, not at the caller site, so no other module needs to know about it.
 //
 // The model call receives the prefixed text; the returned vectors correspond to the original
 // unprefixed texts (one vector per input text in the same order). The prefix is never stored.
-const BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 
 export async function embedQuery(texts, onProgress) {
-  const prefixed = texts.map((t) => `${BGE_QUERY_PREFIX}${t}`);
+  const prefixed = texts.map((t) => `${EMBEDDING_MODEL.queryPrefix}${t}`);
   return embed(prefixed, onProgress);
 }

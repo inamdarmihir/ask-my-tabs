@@ -14,7 +14,10 @@ import { makeClient, QdrantConnectionError, QdrantSchemaError } from "./lib/qdra
 import { indexSource, removeSourceFromLibrary, listLibrarySources } from "./lib/library.js";
 import { answerQuestion } from "./lib/agent.js";
 import { getConfig } from "./lib/config.js";
-import { LIBRARY_COLLECTION, DEFAULT_RETRIEVAL_MODE } from "./lib/constants.js";
+import { libraryCollectionName, DEFAULT_RETRIEVAL_MODE } from "./lib/constants.js";
+import { EMBEDDING_MODEL } from "./lib/embedding-model.js";
+
+const LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key);
 import { embedQuery } from "./lib/embeddings.js";
 
 function broadcast(message) {

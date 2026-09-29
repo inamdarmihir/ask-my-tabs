@@ -21,7 +21,7 @@ vector database and a language model that you choose.
   from. Out-of-range or invented citations are detected and flagged.
 - **Multi-hop retrieval.** The agent splits a comparative question into per-topic queries, checks
   whether the results are sufficient, and issues one refined follow-up search when they are not.
-- **Hybrid search in Qdrant.** Dense embeddings (`bge-small-en-v1.5`) and a sparse lexical vector
+- **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and a sparse lexical vector
   with server-side IDF are fused with weighted Reciprocal Rank Fusion in a single Query API call.
   Dense-only and sparse-only modes are available in settings.
 - **Source-diverse results.** Results are grouped by source, so one long page cannot crowd the
@@ -74,8 +74,9 @@ All settings live in the extension's Settings page and are stored in `chrome.sto
 | Groq | `llama-3.3-70b-versatile` | API key |
 | Google Gemini | `gemini-1.5-flash` | API key |
 
-The model field can be set to any model the provider supports. Embeddings always run in the
-browser, regardless of the provider you pick.
+The model field can be set to any model the provider supports, and **Test key** checks the key
+and model without spending tokens. Embeddings always run in the browser, regardless of the
+provider you pick.
 
 ## Privacy
 
@@ -90,8 +91,8 @@ What leaves your machine depends on the backends you choose:
 Additional notes:
 
 - The extension has no analytics or telemetry, and the project runs no servers.
-- Model weights are downloaded directly by the browser on first use (embeddings from Hugging Face,
-  the on-device LLM from the WebLLM model CDN). Those requests do not include your data.
+- The embedding model ships inside the extension. Only the optional on-device language model is
+  downloaded (from the WebLLM model CDN, on first use). That request does not include your data.
 - Local Qdrant is reachable by any software running as your user. Do not index sensitive pages on a
   shared machine.
 - See [`privacy-policy.html`](privacy-policy.html) and [`store/permissions.md`](store/permissions.md)
@@ -100,8 +101,8 @@ Additional notes:
 ## How it works
 
 **Indexing.** Adding a tab extracts its readable text, splits it into overlapping ~180-word
-chunks, embeds each chunk in the browser, and upserts the chunks to Qdrant as named dense and
-sparse vectors. Point IDs are deterministic hashes of the source key and chunk index.
+chunks, embeds each chunk in the browser with a 23 MB model that ships inside the extension (no
+download, works offline), and upserts the chunks to Qdrant as named dense and sparse vectors. Point IDs are deterministic hashes of the source key and chunk index.
 
 **Answering.** The agent in [`src/lib/agent.js`](src/lib/agent.js) runs at most two hops:
 
@@ -134,9 +135,9 @@ Design rationale and verified behaviors are recorded in [`DECISIONS.md`](DECISIO
 | Chrome on Linux / ChromeOS | Expected to work; not regularly tested |
 | Chrome on iOS, iPadOS, and Android | Not possible. These browsers do not support Chrome extensions. |
 
-The on-device model needs a working WebGPU adapter, which depends on your GPU, drivers, and any
-organization policy. If none is available, the popup explains how to check `chrome://gpu`, or you
-can switch to a hosted provider. The embedder falls back to WASM and works without a GPU.
+The on-device language model needs a working WebGPU adapter, which depends on your GPU, drivers,
+and any organization policy. If none is available, the popup explains how to check `chrome://gpu`,
+or you can switch to a hosted provider. The embedder runs on WASM and never needs a GPU.
 
 ## Development
 
@@ -148,6 +149,7 @@ npm run build          # bundle src/ into dist/
 npm run watch          # rebuild on change
 npm test               # unit tests (no services required)
 npm run test:integration   # integration tests against live Qdrant (docker compose up -d)
+npm run eval               # retrieval eval on BEIR SciFact; needs Qdrant, writes eval/RESULTS.md
 ```
 
 After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`.
@@ -167,13 +169,17 @@ src/
     agent.js             Multi-hop retrieval and answer generation
     qdrant.js            Qdrant REST adapter (collections, upsert, hybrid query)
     library.js           Indexing, snapshot replacement, source management
-    embeddings.js        Dense embedding model wrapper
+    embeddings.js        Dense embedding model wrapper (loads the bundled model)
+    embedding-model.js   The one place that names the embedding model
     sparse.js            Deterministic hashed sparse lexical vectors
     llm.js               On-device WebLLM wrapper
     llm-api.js           OpenAI, Groq, and Gemini clients
     config.js            Settings schema and storage
     chunk.js, ids.js, filters.js, freshness.js, gpu.js, constants.js
-tests/                   unit, integration, e2e, and eval notes
+models/                  Bundled embedding model (see scripts/fetch-models.js)
+eval/                    Retrieval eval harness and results
+scripts/                 Developer scripts
+tests/                   unit, integration, and e2e tests
 store/                   Chrome Web Store listing and permission justifications
 docker-compose.yml       Local Qdrant
 dist/                    Pre-built bundles
@@ -187,7 +193,8 @@ dist/                    Pre-built bundles
 - Navigating a tab after adding it does not re-index it. Remove and re-add the tab to refresh.
 - Upgrading from the earlier IndexedDB-only version does not migrate existing data.
 - The on-device model is small (1.5B parameters). Expect weaker synthesis than a hosted model.
-- The retrieval evaluation harness is not bundled yet. See [`tests/eval/README.md`](tests/eval/README.md).
+- Retrieval quality is measured on scientific abstracts (BEIR SciFact), where hybrid search did not
+  beat dense-only. See [`eval/RESULTS.md`](eval/RESULTS.md) and [`DECISIONS.md`](DECISIONS.md).
 
 ## Contributing
 
