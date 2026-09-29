@@ -371,6 +371,12 @@ chrome.runtime.onMessage.addListener((message) => {
     setModelsReady(true);
   } else if (message.type === "MODEL_ERROR") {
     el.modelStatusText.textContent = `Model load failed: ${message.error}`;
+    // Re-enable the button so a fixable, transient cause (GPU driver update, closing another
+    // GPU-heavy tab, retrying after enabling WebGPU in chrome://flags) can actually be retried
+    // without closing and reopening the popup.
+    el.loadModelsBtn.hidden = false;
+    el.loadModelsBtn.disabled = false;
+    el.loadModelsBtn.textContent = "Retry load";
   } else if (message.type === "AGENT_STATUS") {
     el.statusLine.textContent = message.status;
   } else if (message.type === "ANSWER_TOKEN") {

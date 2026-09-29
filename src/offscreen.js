@@ -40,7 +40,13 @@ async function ensureModelsLoaded() {
 
       modelsReady = true;
       broadcast({ type: "MODELS_READY" });
-    })();
+    })().catch((err) => {
+      // Don't cache a failed load: a missing-WebGPU or transient network failure should be
+      // retry-able from the popup's "Load models" button, not stuck replaying the first error
+      // for the rest of the browser session.
+      loadingPromise = null;
+      throw err;
+    });
   }
   return loadingPromise;
 }

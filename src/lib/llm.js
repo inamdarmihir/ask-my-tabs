@@ -2,15 +2,33 @@
 // turns retrieved snippets into an actual written answer instead of a ranked list of quotes.
 
 import { CreateMLCEngine } from "@mlc-ai/web-llm";
+import { hasWebGPU, WEBGPU_UNAVAILABLE_MESSAGE } from "./gpu.js";
 
 export const MODEL_ID = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
 
 let enginePromise = null;
 
+// WebLLM has no WASM (or any other) fallback for the LLM itself -- unlike the embedder, there is
+// no slower-but-working path here. Checking navigator.gpu.requestAdapter() up front turns an
+// otherwise-cryptic failure several layers deep inside WebLLM's WASM/WebGPU backend selection
+// (e.g. "no available backend found") into one clear, actionable message. This check is the same
+// on Windows, macOS, and Linux Chrome -- it's a per-machine GPU/driver/policy fact, not a
+// per-platform one.
 export async function loadLLM(onProgress) {
   if (!enginePromise) {
-    enginePromise = CreateMLCEngine(MODEL_ID, {
-      initProgressCallback: onProgress,
+    enginePromise = (async () => {
+      if (!(await hasWebGPU())) {
+        throw new Error(WEBGPU_UNAVAILABLE_MESSAGE);
+      }
+      return CreateMLCEngine(MODEL_ID, {
+        initProgressCallback: onProgress,
+      });
+    })().catch((err) => {
+      // Don't cache a failed load: a transient issue (driver update, flag flip, retrying after
+      // closing other GPU-heavy tabs) should be retry-able on the next "Load models" click
+      // instead of permanently replaying the first failure for the rest of the browser session.
+      enginePromise = null;
+      throw err;
     });
   }
   return enginePromise;
