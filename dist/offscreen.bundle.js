@@ -70676,6 +70676,8 @@ async function chatStreamApi(messages, { provider, apiKey, model }, onToken) {
 var DENSE_VECTOR_NAME = "dense";
 var SPARSE_VECTOR_NAME = "sparse";
 var DENSE_SIZE = 384;
+var DEFAULT_RRF_K = 60;
+var DEFAULT_RRF_WEIGHTS = { dense: 1, sparse: 1 };
 var QdrantConnectionError = class extends Error {
   constructor(url, cause) {
     super(
@@ -70763,8 +70765,11 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
             vectors: {
               [DENSE_VECTOR_NAME]: { size: denseSize, distance: "Cosine" }
             },
+            // Qdrant applies IDF at query time from live collection statistics, turning the
+            // client's log-TF vectors (src/lib/sparse.js) into TF-IDF scoring without any
+            // client-side corpus state.
             sparse_vectors: {
-              [SPARSE_VECTOR_NAME]: { index: { on_disk: false } }
+              [SPARSE_VECTOR_NAME]: { index: { on_disk: false }, modifier: "idf" }
             }
           }
         });
@@ -70790,6 +70795,12 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
           throw new QdrantSchemaError(
             `Collection "${name}" exists but has no "${SPARSE_VECTOR_NAME}" sparse vector configured -- it predates hybrid retrieval support. Refusing to modify it automatically; create a fresh collection instead.`
           );
+        }
+        if (sparseCfg.modifier !== "idf") {
+          await request(`/collections/${encodeURIComponent(name)}`, {
+            method: "PATCH",
+            body: { sparse_vectors: { [SPARSE_VECTOR_NAME]: { modifier: "idf" } } }
+          });
         }
       }
       const indexes = [
@@ -70867,7 +70878,24 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
     // `filter` is a Qdrant filter object (already built by the caller, e.g. scoping to a
     // working set's source keys and/or a domain/date range) applied identically regardless of
     // mode, so variants are compared at the same eligible corpus.
-    async query(collection, { mode, dense, sparse, filter, limit = 8, prefetchLimit = 40 }) {
+    //
+    // Hybrid mode fuses dense and sparse prefetches with weighted RRF (`rrfK`, `rrfWeights`).
+    // When `groupBy` is set, results go through /points/query/groups so at most `groupSize`
+    // hits come from each distinct payload value (e.g. per source), which keeps one long page
+    // from crowding every other source out of the context. Grouped results are flattened back
+    // into a single score-sorted list so callers don't need to know grouping happened.
+    async query(collection, {
+      mode,
+      dense,
+      sparse,
+      filter,
+      limit = 8,
+      prefetchLimit = 40,
+      rrfK = DEFAULT_RRF_K,
+      rrfWeights = DEFAULT_RRF_WEIGHTS,
+      groupBy = null,
+      groupSize = 2
+    }) {
       const body = { filter, limit, with_payload: true, with_vector: false };
       if (mode === "dense") {
         body.query = dense;
@@ -70880,16 +70908,24 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
           { query: dense, using: DENSE_VECTOR_NAME, limit: prefetchLimit, filter },
           { query: sparse, using: SPARSE_VECTOR_NAME, limit: prefetchLimit, filter }
         ];
-        body.query = { fusion: "rrf" };
+        body.query = { rrf: { k: rrfK, weights: [rrfWeights.dense, rrfWeights.sparse] } };
         delete body.filter;
       } else {
         throw new Error(`Unknown retrieval mode: ${mode}`);
+      }
+      const toHit = (p) => ({ id: p.id, score: p.score, payload: p.payload });
+      if (groupBy) {
+        const res2 = await request(`/collections/${encodeURIComponent(collection)}/points/query/groups`, {
+          method: "POST",
+          body: { ...body, group_by: groupBy, group_size: groupSize }
+        });
+        return res2.result.groups.flatMap((g) => g.hits.map(toHit)).sort((a, b) => b.score - a.score);
       }
       const res = await request(`/collections/${encodeURIComponent(collection)}/points/query`, {
         method: "POST",
         body
       });
-      return res.result.points.map((p) => ({ id: p.id, score: p.score, payload: p.payload }));
+      return res.result.points.map(toHit);
     }
   };
 }
@@ -71294,7 +71330,12 @@ function dedupeHits(hits) {
   }
   return out;
 }
-async function retrieve({ client, collection, mode, filter, query, embed: embed2, topK = TOP_K_PER_QUERY, freshnessBoost = null }) {
+var MIN_HITS_PER_SOURCE = 2;
+function hitsPerSource(topK, sourceCount) {
+  if (!sourceCount || sourceCount < 1) return MIN_HITS_PER_SOURCE;
+  return Math.max(MIN_HITS_PER_SOURCE, Math.ceil(topK / sourceCount));
+}
+async function retrieve({ client, collection, mode, filter, query, embed: embed2, topK = TOP_K_PER_QUERY, sourceCount = null, freshnessBoost = null }) {
   const [denseVec] = await embed2([query]);
   const sparseVec = sparseVector(query);
   const raw = await client.query(collection, {
@@ -71302,7 +71343,9 @@ async function retrieve({ client, collection, mode, filter, query, embed: embed2
     dense: Array.from(denseVec),
     sparse: sparseVec,
     filter,
-    limit: topK
+    limit: topK,
+    groupBy: "sourceKey",
+    groupSize: hitsPerSource(topK, sourceCount)
   });
   let hits = raw.map((r) => ({
     id: r.id,
@@ -71323,13 +71366,13 @@ async function retrieve({ client, collection, mode, filter, query, embed: embed2
   }
   return hits;
 }
-async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null }, onStatus, onToken) {
+async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null }, onStatus, onToken) {
   onStatus("Planning search queries...");
   const queries = await planQueries(chatJSON2, question, tabTitles);
   let allHits = [];
   for (const q of queries) {
     onStatus(`Searching for "${q}"...`);
-    const hits = await retrieve({ client, collection, mode, filter, query: q, embed: embed2, freshnessBoost });
+    const hits = await retrieve({ client, collection, mode, filter, query: q, embed: embed2, sourceCount, freshnessBoost });
     allHits.push(...hits);
   }
   allHits = dedupeHits(allHits);
@@ -71339,7 +71382,7 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
   while (!sufficient && hops < MAX_HOPS) {
     hops += 1;
     onStatus(`Not quite enough -- searching again for "${refinedQuery}"...`);
-    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed: embed2, freshnessBoost });
+    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed: embed2, sourceCount, freshnessBoost });
     allHits = dedupeHits([...allHits, ...moreHits]);
     ({ sufficient, refinedQuery } = await checkSufficiency(chatJSON2, question, allHits));
   }
@@ -71535,6 +71578,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             mode: message.mode || cfg.retrievalMode || DEFAULT_RETRIEVAL_MODE,
             filter: message.filter,
             tabTitles: message.tabTitles,
+            sourceCount: message.sourceCount ?? null,
             embed: embedQuery,
             // query-time embedding uses the bge instruction prefix
             chatJSON: llmFunctions.chatJSON,

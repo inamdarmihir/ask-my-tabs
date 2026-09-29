@@ -180,6 +180,25 @@ tablet/iPad." Findings, verified rather than assumed:
   surface itself) -- explicitly out of scope for this version, matching the original prompt's "no
   store listing, no cloud path this version" scoping philosophy.
 
+## Qdrant v1.19 retrieval upgrade (Phase A)
+
+- **Qdrant pinned to v1.19.1** (tag and digest in `docker-compose.yml` and CI). Qdrant only
+  guarantees on-disk migration from the previous minor version; the local volume was empty, so it
+  was recreated rather than stepped through 1.12-1.18.
+- **Server-side IDF on the sparse vector** (`modifier: "idf"`). The client still sends log-TF
+  vectors; Qdrant applies IDF from live collection statistics at query time, so there is still no
+  client-side corpus state to keep in sync. Existing collections are upgraded in place with a
+  `PATCH` (scoring-only change, no re-index). Verified live: a term present in every document no
+  longer outweighs a rare one (`tests/integration`).
+- **Weighted RRF** (`query: { rrf: { k, weights } }`, v1.17+). Defaults are `k = 60` and equal
+  weights, which is identical to the previous plain RRF. The parameters exist so the eval can tune
+  them; they were not changed without numbers.
+- **Per-source result grouping** (`/points/query/groups`, `group_by: "sourceKey"`). Previously one
+  long page could fill every top-k slot and a comparison question would cite only one tab. The
+  per-source cap is `max(2, ceil(topK / sourceCount))`, so a working set with a single source still
+  gets full recall, and library scope (unknown source count) uses 2.
+- Payload indexes on `sourceKey`, `domain`, `indexedAt`, etc. already existed and were kept.
+
 ## Findings moved from the README
 
 - **Embedding precision.** `dtype: "q8"` loaded about three times faster but silently broke

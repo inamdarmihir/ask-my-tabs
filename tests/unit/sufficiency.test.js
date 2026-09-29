@@ -5,7 +5,7 @@
 // small positive floats), and RRF fusion-rank-like (unbounded, can exceed 1).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasDiscriminativeSignal, validateCitations } from "../../src/lib/agent.js";
+import { hasDiscriminativeSignal, validateCitations, hitsPerSource } from "../../src/lib/agent.js";
 
 test("no hits at all is never sufficient", () => {
   assert.equal(hasDiscriminativeSignal([]), false);
@@ -70,4 +70,16 @@ test("validateCitations de-duplicates repeated references to the same index", ()
   const result = validateCitations("[1] and again [1] and once more [1]", 2);
   assert.deepEqual(result.valid, [1]);
   assert.equal(result.citedCount, 1);
+});
+
+test("hitsPerSource lets a single source fill topK and caps many sources at 2", () => {
+  assert.equal(hitsPerSource(5, 1), 5);
+  assert.equal(hitsPerSource(5, 2), 3);
+  assert.equal(hitsPerSource(5, 3), 2);
+  assert.equal(hitsPerSource(5, 20), 2);
+});
+
+test("hitsPerSource falls back to the minimum when the source count is unknown", () => {
+  assert.equal(hitsPerSource(5, null), 2);
+  assert.equal(hitsPerSource(5, 0), 2);
 });

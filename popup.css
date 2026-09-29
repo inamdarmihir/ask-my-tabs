@@ -196,3 +196,6 @@ button.secondary { background: transparent; color: var(--muted); border: 1px sol
   .citation-status.confirmed-current { background: #16321c; color: #b6e6c1; }
 }
 .citation-indexed-at { display: block; font-size: 10px; color: var(--muted); }
+
+/* Author display rules (e.g. .banner { display: flex }) override the UA [hidden] style. */
+[hidden] { display: none !important; }

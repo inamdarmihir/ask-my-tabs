@@ -30,15 +30,15 @@
 # State-preserving upgrade (bump the pinned tag/digest below, then):
 #   docker compose pull
 #   docker compose up -d
-#   The named volume is untouched by an image swap; Qdrant migrates its own on-disk format on
-#   startup within a major version. Check https://qdrant.tech release notes before crossing a
-#   major version, and take a volume backup first if you're not on a throwaway eval collection:
+#   The named volume is untouched by an image swap. Qdrant only guarantees on-disk migration
+#   from the previous minor version, so step through minors (or re-index into a fresh volume)
+#   when jumping several releases, and take a volume backup first:
 #     docker run --rm -v ask-my-tabs_qdrant_storage:/qdrant/storage -v "$PWD":/backup \
-#       qdrant/qdrant:v1.11.0 tar czf /backup/qdrant-storage-backup.tgz -C /qdrant/storage .
+#       qdrant/qdrant:v1.19.1 tar czf /backup/qdrant-storage-backup.tgz -C /qdrant/storage .
 
 services:
   qdrant:
-    image: qdrant/qdrant:v1.11.0@sha256:cc802bd2841ec2026725e19619075982311ce4d7182dc8c03a0c8e6817bb9170
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     container_name: ask-my-tabs-qdrant
     restart: unless-stopped
     ports:

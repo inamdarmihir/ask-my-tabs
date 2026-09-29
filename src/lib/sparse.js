@@ -33,6 +33,11 @@
 //
 // Deterministic: same text + same algorithm version always produces the same vector. No corpus
 // state, no randomness, no dependency on insertion order.
+//
+// IDF is applied by Qdrant, not here: the collection's sparse vector is configured with
+// `modifier: "idf"` (src/lib/qdrant.js), so Qdrant weights each query term by its inverse
+// document frequency across the live collection at query time. The effective scoring is
+// log-TF x IDF. It is still not BM25 (no document-length normalization, no k1/b saturation).
 
 export const SPARSE_ALGORITHM_VERSION = "lexical-tf-hash-v1";
 export const SPARSE_DIM = 262144; // 2^18

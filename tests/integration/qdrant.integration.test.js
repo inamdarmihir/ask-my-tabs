@@ -17,7 +17,7 @@ function randomCollectionName() {
   return `${TEST_COLLECTION_PREFIX}${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-const client = makeClient(QDRANT_URL);
+const client = makeClient({ url: QDRANT_URL });
 // Resolved with a top-level await BEFORE any `test()` is registered: node:test's `skip` option
 // only accepts a boolean/string, not a function evaluated later, so computing this inside
 // test.before() would run after skip decisions are already made (every test would silently
@@ -58,7 +58,7 @@ test("ensureCollection is idempotent and creates payload indexes", { skip: !qdra
     const info = await client.getCollection(name);
     assert.equal(info.config.params.vectors.dense.size, 384);
     assert.equal(info.config.params.vectors.dense.distance, "Cosine");
-    assert.ok(info.config.params.sparse_vectors.sparse);
+    assert.equal(info.config.params.sparse_vectors.sparse.modifier, "idf");
   } finally {
     await client.deleteCollection(name).catch(() => {});
   }
@@ -229,6 +229,95 @@ test("listLibrarySources reflects a real live collection, filtered by domain", {
     const filtered = await listLibrarySources(client, name, { domain: "one.example.com" });
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].domain, "one.example.com");
+  } finally {
+    await client.deleteCollection(name).catch(() => {});
+  }
+});
+
+test("ensureCollection upgrades a pre-IDF sparse vector in place without touching points", { skip: !qdrantAvailable }, async () => {
+  const name = randomCollectionName();
+  try {
+    // Create the collection the way pre-IDF versions of this project did.
+    await fetch(`${QDRANT_URL}/collections/${name}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        vectors: { dense: { size: 384, distance: "Cosine" } },
+        sparse_vectors: { sparse: { index: { on_disk: false } } },
+      }),
+    });
+    await indexSource(client, name, { canonicalUrl: "https://example.com/legacy", title: "Legacy", text: "alpha legacy content", embed: fakeEmbed });
+    const before = (await client.getCollection(name)).points_count;
+
+    const res = await client.ensureCollection(name);
+    assert.equal(res.created, false);
+    const info = await client.getCollection(name);
+    assert.equal(info.config.params.sparse_vectors.sparse.modifier, "idf");
+    assert.equal(info.points_count, before);
+  } finally {
+    await client.deleteCollection(name).catch(() => {});
+  }
+});
+
+test("IDF: a query term that is rare in the corpus outranks one that appears everywhere", { skip: !qdrantAvailable }, async () => {
+  const name = randomCollectionName();
+  const { sparseVector } = await import("../../src/lib/sparse.js");
+  try {
+    await client.ensureCollection(name);
+    // "common" appears in every doc (five times in the first); "zebra" only in the second.
+    // Without IDF the first doc wins on raw log-TF (1 + ln 5 > 1 + 1); with IDF, "common"
+    // is worth almost nothing and the zebra doc wins.
+    await indexSource(client, name, { canonicalUrl: "https://example.com/common", title: "C", text: "common common common common common filler", embed: fakeEmbed });
+    await indexSource(client, name, { canonicalUrl: "https://example.com/rare", title: "R", text: "common zebra filler", embed: fakeEmbed });
+    for (let i = 0; i < 4; i++) {
+      await indexSource(client, name, { canonicalUrl: `https://example.com/pad${i}`, title: `P${i}`, text: `common padding ${i}`, embed: fakeEmbed });
+    }
+    const hits = await client.query(name, { mode: "sparse", sparse: sparseVector("common zebra"), limit: 3 });
+    assert.equal(hits[0].payload.canonicalUrl, "https://example.com/rare");
+  } finally {
+    await client.deleteCollection(name).catch(() => {});
+  }
+});
+
+test("weighted RRF: weights shift hybrid ranking toward the favoured retriever", { skip: !qdrantAvailable }, async () => {
+  const name = randomCollectionName();
+  const { sparseVector } = await import("../../src/lib/sparse.js");
+  try {
+    await client.ensureCollection(name);
+    // Dense (fakeEmbed) favours the "alpha" doc; sparse favours the doc containing "gamma".
+    await indexSource(client, name, { canonicalUrl: "https://example.com/dense-wins", title: "D", text: "alpha words only", embed: fakeEmbed });
+    await indexSource(client, name, { canonicalUrl: "https://example.com/sparse-wins", title: "S", text: "gamma gamma words", embed: fakeEmbed });
+    const [denseQ] = await fakeEmbed(["alpha"]);
+    // The sparse-wins doc still appears (rank 2) in the dense prefetch, so with the default k=60
+    // rank differences are too small for moderate weights to flip. k=1 makes ranks matter.
+    const base = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseVector("gamma"), limit: 2, rrfK: 1 };
+
+    const denseHeavy = await client.query(name, { ...base, rrfWeights: { dense: 5, sparse: 1 } });
+    const sparseHeavy = await client.query(name, { ...base, rrfWeights: { dense: 1, sparse: 5 } });
+    assert.equal(denseHeavy[0].payload.canonicalUrl, "https://example.com/dense-wins");
+    assert.equal(sparseHeavy[0].payload.canonicalUrl, "https://example.com/sparse-wins");
+  } finally {
+    await client.deleteCollection(name).catch(() => {});
+  }
+});
+
+test("groupBy sourceKey caps hits per source so a long page can't crowd out others", { skip: !qdrantAvailable }, async () => {
+  const name = randomCollectionName();
+  const { sparseVector } = await import("../../src/lib/sparse.js");
+  try {
+    await client.ensureCollection(name);
+    // A long page produces many matching chunks; a short page produces one.
+    await indexSource(client, name, { canonicalUrl: "https://example.com/long", title: "Long", text: "alpha topic words ".repeat(400), embed: fakeEmbed });
+    await indexSource(client, name, { canonicalUrl: "https://example.com/short", title: "Short", text: "alpha topic words", embed: fakeEmbed });
+    const [denseQ] = await fakeEmbed(["alpha"]);
+    const q = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseVector("alpha topic"), limit: 4 };
+
+    const grouped = await client.query(name, { ...q, groupBy: "sourceKey", groupSize: 2 });
+    const perSource = {};
+    for (const h of grouped) perSource[h.payload.canonicalUrl] = (perSource[h.payload.canonicalUrl] || 0) + 1;
+    assert.ok(perSource["https://example.com/short"] >= 1, "short page must be represented");
+    assert.ok(perSource["https://example.com/long"] <= 2, "long page capped at groupSize");
+    for (let i = 1; i < grouped.length; i++) assert.ok(grouped[i - 1].score >= grouped[i].score, "flattened hits stay score-sorted");
   } finally {
     await client.deleteCollection(name).catch(() => {});
   }

@@ -21,9 +21,11 @@ vector database and a language model that you choose.
   from. Out-of-range or invented citations are detected and flagged.
 - **Multi-hop retrieval.** The agent splits a comparative question into per-topic queries, checks
   whether the results are sufficient, and issues one refined follow-up search when they are not.
-- **Hybrid search.** Dense embeddings (`bge-small-en-v1.5`) and a deterministic sparse lexical
-  vector are fused with Reciprocal Rank Fusion in Qdrant. Dense-only and sparse-only modes are
-  available in settings.
+- **Hybrid search in Qdrant.** Dense embeddings (`bge-small-en-v1.5`) and a sparse lexical vector
+  with server-side IDF are fused with weighted Reciprocal Rank Fusion in a single Query API call.
+  Dense-only and sparse-only modes are available in settings.
+- **Source-diverse results.** Results are grouped by source, so one long page cannot crowd the
+  other tabs out of an answer.
 - **Working set or library.** Query only the tabs you added, or everything you have ever indexed.
   Filter the library by domain or by date indexed.
 - **Durable sources.** Pages are keyed by normalized URL, not by Chrome's reusable `tabId`.
@@ -60,8 +62,8 @@ All settings live in the extension's Settings page and are stored in `chrome.sto
 
 | Option | Setup | Notes |
 | --- | --- | --- |
-| **Local Qdrant** (default) | `docker compose up -d`, URL `http://127.0.0.1:6333` | Bound to `127.0.0.1` only. Image is pinned by tag and digest and supports `amd64` and `arm64`. |
-| **Qdrant Cloud** | Enter your cluster URL and API key, then click **Test Connection** | Chunk text, URLs, and titles are stored in your cluster. |
+| **Local Qdrant** (default) | `docker compose up -d`, URL `http://127.0.0.1:6333` | Qdrant v1.19.1, bound to `127.0.0.1` only. Pinned by tag and digest; supports `amd64` and `arm64`. |
+| **Qdrant Cloud** | Enter your cluster URL and API key, then click **Test Connection** | Requires Qdrant v1.17 or later. Chunk text, URLs, and titles are stored in your cluster. |
 
 ### Language model
 
@@ -104,7 +106,8 @@ sparse vectors. Point IDs are deterministic hashes of the source key and chunk i
 **Answering.** The agent in [`src/lib/agent.js`](src/lib/agent.js) runs at most two hops:
 
 1. The language model plans one to three search queries from the question.
-2. Each query is embedded and searched in Qdrant (dense, sparse, or RRF-fused hybrid).
+2. Each query is embedded and searched in Qdrant in one Query API call: dense and sparse
+   prefetches, weighted RRF fusion, and grouping by source.
 3. A sufficiency check looks at the score distribution and asks the model whether the snippets
    cover the question. If not, one refined follow-up search runs.
 4. The top snippets are passed to the model as numbered context, and it writes a cited answer.
@@ -144,7 +147,7 @@ npm install            # install dependencies
 npm run build          # bundle src/ into dist/
 npm run watch          # rebuild on change
 npm test               # unit tests (no services required)
-npm run test:integration   # integration tests (requires local Qdrant: docker compose up -d)
+npm run test:integration   # integration tests against live Qdrant (docker compose up -d)
 ```
 
 After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`.

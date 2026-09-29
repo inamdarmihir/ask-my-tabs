@@ -337,7 +337,9 @@ async function askQuestion() {
     type: "ASK",
     question,
     filter,
-    tabTitles: workingSet.map((t) => t.title)
+    tabTitles: workingSet.map((t) => t.title),
+    // Lets retrieval size its per-source cap; unknown (null) for library scope.
+    sourceCount: scope === "working-set" ? new Set(workingSet.map((t) => t.sourceKey)).size : null
   }).catch(() => {
   });
   chrome.runtime.onMessage.addListener(function onDone(message) {

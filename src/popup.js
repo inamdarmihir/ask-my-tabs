@@ -362,6 +362,8 @@ async function askQuestion() {
       question,
       filter,
       tabTitles: workingSet.map((t) => t.title),
+      // Lets retrieval size its per-source cap; unknown (null) for library scope.
+      sourceCount: scope === "working-set" ? new Set(workingSet.map((t) => t.sourceKey)).size : null,
     })
     .catch(() => {});
 

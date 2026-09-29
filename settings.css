@@ -278,3 +278,6 @@ button.large {
   text-decoration: underline;
   color: var(--fg);
 }
+
+/* Author display rules (e.g. .banner { display: flex }) override the UA [hidden] style. */
+[hidden] { display: none !important; }

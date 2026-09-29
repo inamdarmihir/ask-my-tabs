@@ -10,6 +10,11 @@ export const DENSE_VECTOR_NAME = "dense";
 export const SPARSE_VECTOR_NAME = "sparse";
 export const DENSE_SIZE = 384; // must match src/lib/embeddings.js's bge-small-en-v1.5 output
 
+// Hybrid fusion defaults. Weighted RRF needs Qdrant v1.17+ (docker-compose.yml pins v1.19.1).
+// Equal weights reproduce plain RRF; change them only with eval numbers to back the change.
+export const DEFAULT_RRF_K = 60;
+export const DEFAULT_RRF_WEIGHTS = { dense: 1, sparse: 1 };
+
 export class QdrantConnectionError extends Error {
   constructor(url, cause) {
     super(
@@ -115,8 +120,11 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
             vectors: {
               [DENSE_VECTOR_NAME]: { size: denseSize, distance: "Cosine" },
             },
+            // Qdrant applies IDF at query time from live collection statistics, turning the
+            // client's log-TF vectors (src/lib/sparse.js) into TF-IDF scoring without any
+            // client-side corpus state.
             sparse_vectors: {
-              [SPARSE_VECTOR_NAME]: { index: { on_disk: false } },
+              [SPARSE_VECTOR_NAME]: { index: { on_disk: false }, modifier: "idf" },
             },
           },
         });
@@ -150,6 +158,15 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
               `configured -- it predates hybrid retrieval support. Refusing to modify it ` +
               `automatically; create a fresh collection instead.`,
           );
+        }
+        // Collections created before the IDF modifier existed are upgraded in place. This only
+        // changes query-time scoring (IDF is computed from stored vectors), so no re-index is
+        // needed and no data is touched.
+        if (sparseCfg.modifier !== "idf") {
+          await request(`/collections/${encodeURIComponent(name)}`, {
+            method: "PATCH",
+            body: { sparse_vectors: { [SPARSE_VECTOR_NAME]: { modifier: "idf" } } },
+          });
         }
       }
 
@@ -239,7 +256,27 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
     // `filter` is a Qdrant filter object (already built by the caller, e.g. scoping to a
     // working set's source keys and/or a domain/date range) applied identically regardless of
     // mode, so variants are compared at the same eligible corpus.
-    async query(collection, { mode, dense, sparse, filter, limit = 8, prefetchLimit = 40 }) {
+    //
+    // Hybrid mode fuses dense and sparse prefetches with weighted RRF (`rrfK`, `rrfWeights`).
+    // When `groupBy` is set, results go through /points/query/groups so at most `groupSize`
+    // hits come from each distinct payload value (e.g. per source), which keeps one long page
+    // from crowding every other source out of the context. Grouped results are flattened back
+    // into a single score-sorted list so callers don't need to know grouping happened.
+    async query(
+      collection,
+      {
+        mode,
+        dense,
+        sparse,
+        filter,
+        limit = 8,
+        prefetchLimit = 40,
+        rrfK = DEFAULT_RRF_K,
+        rrfWeights = DEFAULT_RRF_WEIGHTS,
+        groupBy = null,
+        groupSize = 2,
+      },
+    ) {
       const body = { filter, limit, with_payload: true, with_vector: false };
       if (mode === "dense") {
         body.query = dense;
@@ -252,16 +289,27 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
           { query: dense, using: DENSE_VECTOR_NAME, limit: prefetchLimit, filter },
           { query: sparse, using: SPARSE_VECTOR_NAME, limit: prefetchLimit, filter },
         ];
-        body.query = { fusion: "rrf" };
+        body.query = { rrf: { k: rrfK, weights: [rrfWeights.dense, rrfWeights.sparse] } };
         delete body.filter; // filter already applied per-prefetch; a top-level filter here would double-filter harmlessly but is redundant
       } else {
         throw new Error(`Unknown retrieval mode: ${mode}`);
+      }
+
+      const toHit = (p) => ({ id: p.id, score: p.score, payload: p.payload });
+      if (groupBy) {
+        const res = await request(`/collections/${encodeURIComponent(collection)}/points/query/groups`, {
+          method: "POST",
+          body: { ...body, group_by: groupBy, group_size: groupSize },
+        });
+        return res.result.groups
+          .flatMap((g) => g.hits.map(toHit))
+          .sort((a, b) => b.score - a.score);
       }
       const res = await request(`/collections/${encodeURIComponent(collection)}/points/query`, {
         method: "POST",
         body,
       });
-      return res.result.points.map((p) => ({ id: p.id, score: p.score, payload: p.payload }));
+      return res.result.points.map(toHit);
     },
   };
 }

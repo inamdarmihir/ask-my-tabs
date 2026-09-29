@@ -127,10 +127,21 @@ function dedupeHits(hits) {
   return out;
 }
 
+// How many hits each source may contribute to one query's results. With few sources in scope a
+// small cap would starve recall (one source -> only 2 hits), so the cap grows until the sources
+// can fill `topK` between them; with many sources it bottoms out at MIN_HITS_PER_SOURCE.
+// `sourceCount` is null when unknown (library scope), which uses the minimum.
+const MIN_HITS_PER_SOURCE = 2;
+export function hitsPerSource(topK, sourceCount) {
+  if (!sourceCount || sourceCount < 1) return MIN_HITS_PER_SOURCE;
+  return Math.max(MIN_HITS_PER_SOURCE, Math.ceil(topK / sourceCount));
+}
+
 // One retrieval call for one query string, in whichever mode the caller picked ("dense",
-// "sparse", or "hybrid"). Returns hits shaped like the old vectorstore's, so agent logic above
-// this line doesn't need to know it's now talking to Qdrant.
-export async function retrieve({ client, collection, mode, filter, query, embed, topK = TOP_K_PER_QUERY, freshnessBoost = null }) {
+// "sparse", or "hybrid"). Results are grouped by source (see hitsPerSource) so comparison
+// questions get evidence from every relevant tab. Returns hits shaped like the old
+// vectorstore's, so agent logic above this line doesn't need to know it's talking to Qdrant.
+export async function retrieve({ client, collection, mode, filter, query, embed, topK = TOP_K_PER_QUERY, sourceCount = null, freshnessBoost = null }) {
   const [denseVec] = await embed([query]);
   const sparseVec = sparseVector(query);
   const raw = await client.query(collection, {
@@ -139,6 +150,8 @@ export async function retrieve({ client, collection, mode, filter, query, embed,
     sparse: sparseVec,
     filter,
     limit: topK,
+    groupBy: "sourceKey",
+    groupSize: hitsPerSource(topK, sourceCount),
   });
   let hits = raw.map((r) => ({
     id: r.id,
@@ -162,7 +175,7 @@ export async function retrieve({ client, collection, mode, filter, query, embed,
 
 export async function answerQuestion(
   question,
-  { client, collection, mode = "hybrid", filter, tabTitles, embed, chatJSON, chatStream, freshnessBoost = null },
+  { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed, chatJSON, chatStream, freshnessBoost = null },
   onStatus,
   onToken,
 ) {
@@ -172,7 +185,7 @@ export async function answerQuestion(
   let allHits = [];
   for (const q of queries) {
     onStatus(`Searching for "${q}"...`);
-    const hits = await retrieve({ client, collection, mode, filter, query: q, embed, freshnessBoost });
+    const hits = await retrieve({ client, collection, mode, filter, query: q, embed, sourceCount, freshnessBoost });
     allHits.push(...hits);
   }
   allHits = dedupeHits(allHits);
@@ -184,7 +197,7 @@ export async function answerQuestion(
   while (!sufficient && hops < MAX_HOPS) {
     hops += 1;
     onStatus(`Not quite enough -- searching again for "${refinedQuery}"...`);
-    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed, freshnessBoost });
+    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed, sourceCount, freshnessBoost });
     allHits = dedupeHits([...allHits, ...moreHits]);
     ({ sufficient, refinedQuery } = await checkSufficiency(chatJSON, question, allHits));
   }

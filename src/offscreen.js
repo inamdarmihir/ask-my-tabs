@@ -219,6 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             mode: message.mode || cfg.retrievalMode || DEFAULT_RETRIEVAL_MODE,
             filter: message.filter,
             tabTitles: message.tabTitles,
+            sourceCount: message.sourceCount ?? null,
             embed: embedQuery, // query-time embedding uses the bge instruction prefix
             chatJSON: llmFunctions.chatJSON,
             chatStream: llmFunctions.chatStream,
