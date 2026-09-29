@@ -6,6 +6,12 @@
 import { chunkText, hashText } from "./chunk.js";
 import { canonicalizeUrl, domainOf, sourceKeyFor, chunkPointId } from "./ids.js";
 import { sparseVector, SPARSE_ALGORITHM_VERSION } from "./sparse.js";
+import { startTimer } from "./timing.js";
+
+// Chunks embedded per model call. Small enough to report progress and keep peak memory low, large
+// enough that per-call overhead doesn't dominate (benchmarked: batches of 8 were 10-30% faster
+// than one call for a whole page in Node).
+export const EMBED_BATCH_SIZE = 16;
 
 export class IndexingError extends Error {
   constructor(message, cause) {
@@ -27,7 +33,8 @@ export class IndexingError extends Error {
 // than silently swallowing it; the leftover old chunks are still tagged with their own
 // (superseded) contentHash, and a repair pass is just calling indexSource again, which is
 // idempotent and will retry the delete with the same deterministic point IDs.
-export async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed, observedTabId, observedSessionId, corpusMode = "library" }) {
+export async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed, observedTabId, observedSessionId, corpusMode = "library", onProgress }) {
+  const timer = startTimer();
   const canonicalUrl = canonicalizeUrl(rawUrl);
   const domain = domainOf(canonicalUrl);
   const sourceKey = await sourceKeyFor(canonicalUrl);
@@ -42,10 +49,12 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
   // (i.e. this isn't just a theoretical worry -- it reproduced immediately in fast, real test
   // runs, though rarely against a live Qdrant where network latency spreads writes apart). Set
   // membership has no timing dependency at all.
-  const existingPoints = await client.scrollAll(collection, {
-    filter: { must: [{ key: "sourceKey", match: { value: sourceKey } }] },
-    withPayload: true,
-  });
+  const existingPoints = await timer.time("check", () =>
+    client.scrollAll(collection, {
+      filter: { must: [{ key: "sourceKey", match: { value: sourceKey } }] },
+      withPayload: true,
+    }),
+  );
   const existingHashes = new Set(existingPoints.map((p) => p.payload.contentHash));
   const hadAnySnapshotBefore = existingPoints.length > 0;
 
@@ -66,7 +75,7 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
         // best-effort repair; next successful write will retry the same cleanup
       }
     }
-    return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash };
+    return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash, timings: timer.summary() };
   }
 
   const pieces = chunkText(text);
@@ -74,9 +83,14 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
 
-  let denseVectors;
+  const denseVectors = [];
   try {
-    denseVectors = await embed(pieces);
+    await timer.time("embed", async () => {
+      for (let i = 0; i < pieces.length; i += EMBED_BATCH_SIZE) {
+        denseVectors.push(...(await embed(pieces.slice(i, i + EMBED_BATCH_SIZE))));
+        onProgress?.({ stage: "embedding", done: Math.min(i + EMBED_BATCH_SIZE, pieces.length), total: pieces.length });
+      }
+    });
   } catch (err) {
     throw new IndexingError(
       `Embedding failed for ${canonicalUrl}; previous snapshot (if any) was left untouched.`,
@@ -107,8 +121,9 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
     },
   }));
 
+  onProgress?.({ stage: "saving", done: pieces.length, total: pieces.length });
   try {
-    await client.upsertPoints(collection, points);
+    await timer.time("upsert", () => client.upsertPoints(collection, points));
   } catch (err) {
     throw new IndexingError(
       `Upsert failed for ${canonicalUrl}; previous snapshot (if any) was left untouched.`,
@@ -140,6 +155,7 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
     chunkCount: points.length,
     replaced: hadAnySnapshotBefore,
     staleSnapshotCleanupFailed,
+    timings: timer.summary(),
   };
 }
 

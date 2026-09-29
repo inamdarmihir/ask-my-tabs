@@ -11,6 +11,7 @@
 // (see DECISIONS.md) and replaced with `hasDiscriminativeSignal`, below.
 
 import { sparseVector } from "./sparse.js";
+import { startTimer } from "./timing.js";
 
 const MAX_HOPS = 2;
 const TOP_K_PER_QUERY = 5;
@@ -179,27 +180,39 @@ export async function answerQuestion(
   onStatus,
   onToken,
 ) {
-  onStatus("Planning search queries...");
-  const queries = await planQueries(chatJSON, question, tabTitles);
+  const timer = startTimer();
 
-  let allHits = [];
-  for (const q of queries) {
-    onStatus(`Searching for "${q}"...`);
-    const hits = await retrieve({ client, collection, mode, filter, query: q, embed, sourceCount, freshnessBoost });
-    allHits.push(...hits);
+  // With a single source in scope there is nothing to split a comparison across, so the planning
+  // LLM call is skipped (one fewer round trip) and the question itself is the search query.
+  let queries;
+  if (sourceCount === 1) {
+    queries = [question];
+  } else {
+    onStatus("Planning search queries...");
+    queries = await timer.time("plan", () => planQueries(chatJSON, question, tabTitles));
   }
-  allHits = dedupeHits(allHits);
+
+  onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
+  // Queries are independent, so run them concurrently.
+  const perQuery = await timer.time("retrieve", () =>
+    Promise.all(
+      queries.map((q) => retrieve({ client, collection, mode, filter, query: q, embed, sourceCount, freshnessBoost })),
+    ),
+  );
+  let allHits = dedupeHits(perQuery.flat());
 
   onStatus("Checking whether that's enough to answer...");
   let hops = 1;
-  let { sufficient, refinedQuery } = await checkSufficiency(chatJSON, question, allHits);
+  let { sufficient, refinedQuery } = await timer.time("sufficiency", () => checkSufficiency(chatJSON, question, allHits));
 
   while (!sufficient && hops < MAX_HOPS) {
     hops += 1;
     onStatus(`Not quite enough -- searching again for "${refinedQuery}"...`);
-    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed, sourceCount, freshnessBoost });
+    const moreHits = await timer.time("retrieve", () =>
+      retrieve({ client, collection, mode, filter, query: refinedQuery, embed, sourceCount, freshnessBoost }),
+    );
     allHits = dedupeHits([...allHits, ...moreHits]);
-    ({ sufficient, refinedQuery } = await checkSufficiency(chatJSON, question, allHits));
+    ({ sufficient, refinedQuery } = await timer.time("sufficiency", () => checkSufficiency(chatJSON, question, allHits)));
   }
 
   const topHits = allHits.slice(0, FINAL_TOP_K);
@@ -209,7 +222,7 @@ export async function answerQuestion(
       "I couldn't find anything in scope that relates to this question. Try adding a relevant " +
       "source first, or widening the working set/library filters.";
     onToken(msg, msg);
-    return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 } };
+    return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 }, timings: timer.summary() };
   }
 
   onStatus("Writing an answer...");
@@ -217,7 +230,7 @@ export async function answerQuestion(
     .map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`)
     .join("\n\n");
 
-  const answer = await chatStream(
+  const answer = await timer.time("generate", () => chatStream(
     [
       {
         role: "system",
@@ -230,7 +243,7 @@ export async function answerQuestion(
       { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${question}` },
     ],
     onToken,
-  );
+  ));
 
   const citationValidation = validateCitations(answer, topHits.length);
 
@@ -250,5 +263,6 @@ export async function answerQuestion(
     })),
     abstained: false,
     citationValidation,
+    timings: { ...timer.summary(), hops, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size },
   };
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { indexSource, removeSourceFromLibrary, listLibrarySources, IndexingError } from "../../src/lib/library.js";
+import { indexSource, removeSourceFromLibrary, listLibrarySources, IndexingError, EMBED_BATCH_SIZE } from "../../src/lib/library.js";
 
 // A tiny in-memory fake of the qdrant.js adapter surface library.js actually calls, so these
 // tests exercise real lifecycle logic (no-op detection, replace ordering, failure handling)
@@ -127,4 +127,42 @@ test("listLibrarySources returns one row per source, not one per chunk", async (
   const sources = await listLibrarySources(client, "col");
   assert.equal(sources.length, 1);
   assert.ok(sources[0].chunkCount > 1);
+});
+
+test("embedding runs in batches of EMBED_BATCH_SIZE and reports progress", async () => {
+  const client = fakeClient();
+  const batchSizes = [];
+  const progress = [];
+  const embed = async (texts) => {
+    batchSizes.push(texts.length);
+    return texts.map(() => new Float32Array(384).fill(0.01));
+  };
+  // ~180-word chunks with 30-word overlap: 5,000 words gives well over two batches of chunks.
+  const text = Array.from({ length: 5000 }, (_, i) => `word${i}`).join(" ");
+  const res = await indexSource(client, "col", {
+    canonicalUrl: "https://example.com/long",
+    title: "Long",
+    text,
+    embed,
+    onProgress: (p) => progress.push(p),
+  });
+
+  assert.ok(res.chunkCount > EMBED_BATCH_SIZE, "fixture must span more than one batch");
+  assert.ok(batchSizes.every((n) => n <= EMBED_BATCH_SIZE));
+  assert.equal(batchSizes.reduce((a, b) => a + b, 0), res.chunkCount);
+  const embedding = progress.filter((p) => p.stage === "embedding");
+  assert.equal(embedding.length, batchSizes.length);
+  assert.equal(embedding.at(-1).done, res.chunkCount);
+  assert.equal(progress.at(-1).stage, "saving");
+  assert.equal(client._points.size, res.chunkCount);
+});
+
+test("indexSource reports per-stage timings, including for the unchanged no-op", async () => {
+  const client = fakeClient();
+  const args = { canonicalUrl: "https://example.com/t", title: "T", text: Array.from({ length: 60 }, (_, i) => `w${i}`).join(" "), embed: fakeEmbed };
+  const first = await indexSource(client, "col", args);
+  assert.ok("embed" in first.timings.stages && "upsert" in first.timings.stages);
+  const second = await indexSource(client, "col", args);
+  assert.equal(second.skipped, true);
+  assert.ok(!("embed" in second.timings.stages));
 });

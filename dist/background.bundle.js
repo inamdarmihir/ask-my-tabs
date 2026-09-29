@@ -200,7 +200,72 @@ async function extractTabText(tabId) {
   });
   return result;
 }
+async function sendToOffscreen(message, attempts = 10) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await chrome.runtime.sendMessage(message);
+      if (res !== void 0) return res;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+  }
+  throw lastErr || new Error("The extension's background page did not respond.");
+}
+async function indexTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!/^https?:\/\//.test(tab.url || "")) {
+    throw new Error("Only regular web pages (http/https) can be added.");
+  }
+  const extraction = await extractTabText(tabId);
+  if (!extraction.text || extraction.text.length < 50) {
+    throw new Error("Not enough readable text on this page.");
+  }
+  await ensureOffscreenDocument();
+  const sessionId = await getSessionId();
+  const result = await sendToOffscreen({
+    type: "INDEX_SOURCE",
+    tabId,
+    sessionId,
+    title: extraction.title,
+    url: tab.url,
+    text: extraction.text
+  });
+  if (!result?.ok) {
+    if (result?.qdrant?.kind === "down") throw new Error(result.qdrant.message);
+    throw new Error(result?.error || "Indexing failed.");
+  }
+  const list = await getWorkingSet();
+  const dupe = list.find((t) => t.sourceKey === result.sourceKey);
+  if (dupe) {
+    dupe.tabId = tabId;
+    dupe.title = extraction.title;
+    await setWorkingSet(list);
+  } else if (!list.some((t) => t.tabId === tabId)) {
+    list.push({
+      tabId,
+      sourceKey: result.sourceKey,
+      canonicalUrl: result.canonicalUrl,
+      title: extraction.title,
+      domain: result.domain,
+      addedAt: Date.now()
+    });
+    await setWorkingSet(list);
+  }
+  return {
+    sourceKey: result.sourceKey,
+    title: extraction.title,
+    skipped: !!result.skipped,
+    chunkCount: result.chunkCount ?? null,
+    timings: result.timings
+  };
+}
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "INDEX_TAB") {
+    indexTab(message.tabId).then((result) => sendResponse({ ok: true, ...result })).catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
   if (message.type === "EXTRACT_TAB_TEXT") {
     extractTabText(message.tabId).then((result) => sendResponse({ ok: true, ...result })).catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;

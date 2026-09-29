@@ -1,6 +1,7 @@
 import { buildScopeFilter } from "./lib/filters.js";
 import { citationStatus } from "./lib/freshness.js";
 import { getConfig, ALL_API_PROVIDERS } from "./lib/config.js";
+import { formatMs } from "./lib/timing.js";
 
 const WORKING_SET_KEY = "workingSet";
 
@@ -23,6 +24,7 @@ const el = {
   questionInput: document.getElementById("question-input"),
   askBtn: document.getElementById("ask-btn"),
   statusLine: document.getElementById("status-line"),
+  timingNote: document.getElementById("timing-note"),
   answerSection: document.getElementById("answer-section"),
   answerText: document.getElementById("answer-text"),
   citationWarning: document.getElementById("citation-warning"),
@@ -69,65 +71,32 @@ async function removeFromWorkingSet(tabId) {
   else renderWorkingSet(await getWorkingSet());
 }
 
-async function getSessionId() {
-  const res = await sendToBackground({ type: "GET_SESSION_ID" });
-  if (!res?.ok) throw new Error(res?.error || "Could not get session id");
-  return res.sessionId;
-}
+// The tab currently being indexed, so INDEX_PROGRESS events for other tabs are ignored.
+let indexingTabId = null;
 
+// Indexing runs in the service worker (INDEX_TAB), so it completes even if this popup closes.
 async function addCurrentTab() {
   el.addTabBtn.disabled = true;
   el.addTabBtn.textContent = "Reading page...";
+  el.timingNote.hidden = true;
   try {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!activeTab) throw new Error("No active tab found.");
 
-    const extraction = await sendToBackground({ type: "EXTRACT_TAB_TEXT", tabId: activeTab.id });
-    if (!extraction.ok) throw new Error(extraction.error);
-    if (!extraction.text || extraction.text.length < 50) {
-      throw new Error("Not enough readable text on this page.");
-    }
+    indexingTabId = activeTab.id;
+    const res = await sendToBackground({ type: "INDEX_TAB", tabId: activeTab.id });
+    if (!res?.ok) throw new Error(res?.error || "Indexing failed.");
 
-    await sendToBackground({ type: "ENSURE_OFFSCREEN" });
-    const sessionId = await getSessionId();
-
-    el.addTabBtn.textContent = "Indexing...";
-    const indexResult = await chrome.runtime.sendMessage({
-      type: "INDEX_SOURCE",
-      tabId: activeTab.id,
-      sessionId,
-      title: extraction.title,
-      url: activeTab.url,
-      text: extraction.text,
-    });
-    if (!indexResult.ok) {
-      if (indexResult.qdrant?.kind === "down") throw new Error(indexResult.qdrant.message);
-      throw new Error(indexResult.error);
-    }
-
-    const list = await getWorkingSet();
-    const dupe = list.find((t) => t.sourceKey === indexResult.sourceKey);
-    if (dupe) {
-      // Same source already tracked under a different tab -- repoint it instead of adding a
-      // second working-set entry for the same source (avoids duplicate-source answer inflation).
-      dupe.tabId = activeTab.id;
-      dupe.title = extraction.title;
-      await setWorkingSet(list);
-    } else if (!list.some((t) => t.tabId === activeTab.id)) {
-      list.push({
-        tabId: activeTab.id,
-        sourceKey: indexResult.sourceKey,
-        canonicalUrl: indexResult.canonicalUrl,
-        title: extraction.title,
-        domain: indexResult.domain,
-        addedAt: Date.now(),
-      });
-      await setWorkingSet(list);
-    }
+    renderWorkingSet(await getWorkingSet());
     refreshLibrary();
+    el.timingNote.hidden = false;
+    el.timingNote.textContent = res.skipped
+      ? "Already indexed and unchanged."
+      : `Indexed ${res.chunkCount} chunks in ${formatMs(res.timings?.totalMs ?? 0)}.`;
   } catch (err) {
     alert(`Couldn't add this tab: ${err.message}`);
   } finally {
+    indexingTabId = null;
     el.addTabBtn.disabled = false;
     el.addTabBtn.textContent = "+ Add current tab";
   }
@@ -402,6 +371,13 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "MODEL_PROGRESS") {
     el.modelStatusText.textContent =
       typeof message.detail === "string" ? message.detail : `Loading ${message.stage}...`;
+    // Mirror download progress onto the button that is waiting for it.
+    if (indexingTabId !== null) el.addTabBtn.textContent = el.modelStatusText.textContent;
+  } else if (message.type === "INDEX_PROGRESS") {
+    if (message.tabId === indexingTabId) {
+      el.addTabBtn.textContent =
+        message.stage === "saving" ? "Saving..." : `Indexing ${message.done}/${message.total}...`;
+    }
   } else if (message.type === "MODELS_READY") {
     setModelsReady(true);
   } else if (message.type === "MODEL_ERROR") {
@@ -424,6 +400,13 @@ chrome.runtime.onMessage.addListener((message) => {
     el.statusLine.hidden = true;
     el.answerSection.hidden = false;
     if (message.answer) el.answerText.textContent = message.answer;
+    if (message.timings) {
+      const t = message.timings;
+      const parts = [`Answered in ${formatMs(t.totalMs)}`];
+      if (t.snippets) parts.push(`${t.snippets} snippets`, `${t.sources} source${t.sources === 1 ? "" : "s"}`);
+      el.timingNote.hidden = false;
+      el.timingNote.textContent = parts.join(" · ");
+    }
     if (message.citationValidation?.invalid?.length) {
       el.citationWarning.hidden = false;
       el.citationWarning.textContent =
@@ -465,6 +448,10 @@ el.settingsBtn.addEventListener("click", () => {
 
 (async () => {
   renderWorkingSet(await getWorkingSet());
+  // Start loading the embedding model now so the first "Add tab" doesn't wait for it.
+  sendToBackground({ type: "ENSURE_OFFSCREEN" })
+    .then(() => chrome.runtime.sendMessage({ type: "WARM_EMBEDDER" }))
+    .catch(() => {});
   await refreshModelStatus();
   const healthy = await checkQdrantHealth();
   if (healthy) refreshLibrary();

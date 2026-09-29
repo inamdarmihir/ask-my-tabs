@@ -199,3 +199,5 @@ button.secondary { background: transparent; color: var(--muted); border: 1px sol
 
 /* Author display rules (e.g. .banner { display: flex }) override the UA [hidden] style. */
 [hidden] { display: none !important; }
+
+.timing-note { color: var(--muted); font-size: 11px; margin: 6px 0 0; }

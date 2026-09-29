@@ -63,36 +63,72 @@ async function applyConfig() {
 
 // ─── Model loading ────────────────────────────────────────────────────────────
 
-let modelsReady = false;
-let loadingPromise = null;
+// The embedder and the LLM load independently. Indexing a tab only needs the embedder (small),
+// so it must never wait on the WebLLM download (hundreds of MB) even when local answers are
+// selected. Answering needs both (the LLM only when the provider is "webllm").
+let embedderReady = false;
+let embedderPromise = null;
+let llmReady = false;
+let llmPromise = null;
+
+// transformers.js reports {status, file, progress: 0-100}; WebLLM reports {progress: 0-1, text}.
+// Returns a short human string, or null for events not worth showing.
+function describeProgress(label, p) {
+  if (typeof p === "string") return p;
+  if (!p) return null;
+  if (typeof p.text === "string") return p.text;
+  if (p.status === "progress" && typeof p.progress === "number") {
+    return `Downloading ${label} model... ${Math.round(p.progress)}%`;
+  }
+  return null;
+}
+
+function reportModelProgress(stage, label, p) {
+  const detail = describeProgress(label, p);
+  if (detail) broadcast({ type: "MODEL_PROGRESS", stage, detail });
+}
+
+function ensureEmbedderLoaded() {
+  if (embedderReady) return Promise.resolve();
+  if (!embedderPromise) {
+    broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
+    embedderPromise = loadEmbedder((p) => reportModelProgress("embedder", "embedding", p))
+      .then(() => {
+        embedderReady = true;
+      })
+      .catch((err) => {
+        // Don't cache a failed load: a transient issue (network hiccup, GPU flag) should be
+        // retry-able without reloading the extension.
+        embedderPromise = null;
+        throw err;
+      });
+  }
+  return embedderPromise;
+}
+
+function ensureLLMLoaded(cfg) {
+  if (cfg.llmProvider !== "webllm" || llmReady) return Promise.resolve();
+  if (!llmPromise) {
+    broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
+    llmPromise = loadLLM((p) => reportModelProgress("llm", "language", p))
+      .then(() => {
+        llmReady = true;
+      })
+      .catch((err) => {
+        llmPromise = null;
+        throw err;
+      });
+  }
+  return llmPromise;
+}
 
 async function ensureModelsLoaded(cfg) {
-  // API-provider users never need to load local model weights. The embedder is always needed
-  // (it runs locally regardless of LLM choice), but the WebLLM language model is only loaded
-  // when the user has explicitly chosen the local WebLLM provider.
-  const needsWebLLM = cfg.llmProvider === "webllm";
+  await Promise.all([ensureEmbedderLoaded(), ensureLLMLoaded(cfg)]);
+  broadcast({ type: "MODELS_READY" });
+}
 
-  if (modelsReady) return;
-  if (!loadingPromise) {
-    loadingPromise = (async () => {
-      broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
-      await loadEmbedder((p) => broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: p }));
-
-      if (needsWebLLM) {
-        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
-        await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
-      }
-
-      modelsReady = true;
-      broadcast({ type: "MODELS_READY" });
-    })().catch((err) => {
-      // Don't cache a failed load: a transient issue (driver update, GPU flag, network hiccup)
-      // should be retry-able from the popup's "Load models" button.
-      loadingPromise = null;
-      throw err;
-    });
-  }
-  return loadingPromise;
+function modelsReadyFor(cfg) {
+  return embedderReady && (cfg.llmProvider !== "webllm" || llmReady);
 }
 
 async function ensureCollectionReady() {
@@ -117,7 +153,17 @@ applyConfig().catch((err) => console.warn("[offscreen] config load on startup fa
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_STATE") {
-    sendResponse({ ok: true, modelsReady });
+    getConfig()
+      .then((cfg) => sendResponse({ ok: true, modelsReady: modelsReadyFor(cfg), embedderReady }))
+      .catch(() => sendResponse({ ok: true, modelsReady: false, embedderReady }));
+    return true;
+  }
+
+  // Start loading the embedder early (popup open) so the first "Add tab" doesn't pay for it.
+  // Best-effort: failures surface on the real operation, which retries the load.
+  if (message.type === "WARM_EMBEDDER") {
+    ensureEmbedderLoaded().catch((err) => console.warn("[offscreen] warm-up failed:", err));
+    sendResponse({ ok: true });
     return false;
   }
 
@@ -125,12 +171,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Rebuild clients without reloading the offscreen document. Model weights already in memory
     // are kept; only the Qdrant client and LLM provider need to be swapped.
     applyConfig()
-      .then((cfg) => {
-        // If the user switched from webllm to an API provider, mark models as no longer needed
-        // in the old sense -- but don't evict the embedder (always needed).
-        if (cfg.llmProvider !== "webllm") modelsReady = false;
-        sendResponse({ ok: true });
-      })
+      .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
@@ -158,8 +199,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "INDEX_SOURCE") {
     (async () => {
       try {
-        const cfg = await getConfig();
-        await ensureModelsLoaded(cfg);
+        // Indexing only needs the embedder, never the LLM.
+        await ensureEmbedderLoaded();
         await ensureCollectionReady();
         const result = await indexSource(qdrant, LIBRARY_COLLECTION, {
           canonicalUrl: message.url,
@@ -168,7 +209,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           embed,
           observedTabId: message.tabId,
           observedSessionId: message.sessionId,
+          onProgress: (p) => broadcast({ type: "INDEX_PROGRESS", tabId: message.tabId, ...p }),
         });
+        console.info("[offscreen] indexed", message.url, result.skipped ? "(unchanged)" : `${result.chunkCount} chunks`, result.timings);
         sendResponse({ ok: true, ...result });
       } catch (err) {
         console.error("[offscreen] indexing failed:", err);
@@ -227,6 +270,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (status) => broadcast({ type: "AGENT_STATUS", status }),
           (delta, full) => broadcast({ type: "ANSWER_TOKEN", delta, full }),
         );
+        console.info("[offscreen] answered", result.timings);
         broadcast({ type: "ANSWER_DONE", ...result });
       } catch (err) {
         console.error("[offscreen] answering failed:", err);

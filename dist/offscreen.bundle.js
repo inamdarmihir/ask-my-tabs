@@ -71113,7 +71113,29 @@ function sparseVector(text) {
   return { indices, values };
 }
 
+// src/lib/timing.js
+function startTimer(now = () => performance.now()) {
+  const start = now();
+  const stages = {};
+  return {
+    async time(name, fn) {
+      const t = now();
+      try {
+        return await fn();
+      } finally {
+        stages[name] = (stages[name] || 0) + (now() - t);
+      }
+    },
+    summary() {
+      const rounded = {};
+      for (const [k2, v] of Object.entries(stages)) rounded[k2] = Math.round(v);
+      return { totalMs: Math.round(now() - start), stages: rounded };
+    }
+  };
+}
+
 // src/lib/library.js
+var EMBED_BATCH_SIZE = 16;
 var IndexingError = class extends Error {
   constructor(message, cause) {
     super(message);
@@ -71121,15 +71143,19 @@ var IndexingError = class extends Error {
     this.cause = cause;
   }
 };
-async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed: embed2, observedTabId, observedSessionId, corpusMode = "library" }) {
+async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed: embed2, observedTabId, observedSessionId, corpusMode = "library", onProgress }) {
+  const timer = startTimer();
   const canonicalUrl = canonicalizeUrl(rawUrl);
   const domain = domainOf(canonicalUrl);
   const sourceKey = await sourceKeyFor(canonicalUrl);
   const contentHash = await hashText(text);
-  const existingPoints = await client.scrollAll(collection, {
-    filter: { must: [{ key: "sourceKey", match: { value: sourceKey } }] },
-    withPayload: true
-  });
+  const existingPoints = await timer.time(
+    "check",
+    () => client.scrollAll(collection, {
+      filter: { must: [{ key: "sourceKey", match: { value: sourceKey } }] },
+      withPayload: true
+    })
+  );
   const existingHashes = new Set(existingPoints.map((p) => p.payload.contentHash));
   const hadAnySnapshotBefore = existingPoints.length > 0;
   if (existingHashes.has(contentHash)) {
@@ -71142,15 +71168,20 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
       } catch {
       }
     }
-    return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash };
+    return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash, timings: timer.summary() };
   }
   const pieces = chunkText(text);
   if (pieces.length === 0) {
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
-  let denseVectors;
+  const denseVectors = [];
   try {
-    denseVectors = await embed2(pieces);
+    await timer.time("embed", async () => {
+      for (let i = 0; i < pieces.length; i += EMBED_BATCH_SIZE) {
+        denseVectors.push(...await embed2(pieces.slice(i, i + EMBED_BATCH_SIZE)));
+        onProgress?.({ stage: "embedding", done: Math.min(i + EMBED_BATCH_SIZE, pieces.length), total: pieces.length });
+      }
+    });
   } catch (err) {
     throw new IndexingError(
       `Embedding failed for ${canonicalUrl}; previous snapshot (if any) was left untouched.`,
@@ -71179,8 +71210,9 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
       sparseAlgorithmVersion: SPARSE_ALGORITHM_VERSION
     }
   }));
+  onProgress?.({ stage: "saving", done: pieces.length, total: pieces.length });
   try {
-    await client.upsertPoints(collection, points);
+    await timer.time("upsert", () => client.upsertPoints(collection, points));
   } catch (err) {
     throw new IndexingError(
       `Upsert failed for ${canonicalUrl}; previous snapshot (if any) was left untouched.`,
@@ -71207,7 +71239,8 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
     indexedAt,
     chunkCount: points.length,
     replaced: hadAnySnapshotBefore,
-    staleSnapshotCleanupFailed
+    staleSnapshotCleanupFailed,
+    timings: timer.summary()
   };
 }
 async function removeSourceFromLibrary(client, collection, canonicalUrl) {
@@ -71372,34 +71405,44 @@ async function retrieve({ client, collection, mode, filter, query, embed: embed2
   return hits;
 }
 async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null }, onStatus, onToken) {
-  onStatus("Planning search queries...");
-  const queries = await planQueries(chatJSON2, question, tabTitles);
-  let allHits = [];
-  for (const q of queries) {
-    onStatus(`Searching for "${q}"...`);
-    const hits = await retrieve({ client, collection, mode, filter, query: q, embed: embed2, sourceCount, freshnessBoost });
-    allHits.push(...hits);
+  const timer = startTimer();
+  let queries;
+  if (sourceCount === 1) {
+    queries = [question];
+  } else {
+    onStatus("Planning search queries...");
+    queries = await timer.time("plan", () => planQueries(chatJSON2, question, tabTitles));
   }
-  allHits = dedupeHits(allHits);
+  onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
+  const perQuery = await timer.time(
+    "retrieve",
+    () => Promise.all(
+      queries.map((q) => retrieve({ client, collection, mode, filter, query: q, embed: embed2, sourceCount, freshnessBoost }))
+    )
+  );
+  let allHits = dedupeHits(perQuery.flat());
   onStatus("Checking whether that's enough to answer...");
   let hops = 1;
-  let { sufficient, refinedQuery } = await checkSufficiency(chatJSON2, question, allHits);
+  let { sufficient, refinedQuery } = await timer.time("sufficiency", () => checkSufficiency(chatJSON2, question, allHits));
   while (!sufficient && hops < MAX_HOPS) {
     hops += 1;
     onStatus(`Not quite enough -- searching again for "${refinedQuery}"...`);
-    const moreHits = await retrieve({ client, collection, mode, filter, query: refinedQuery, embed: embed2, sourceCount, freshnessBoost });
+    const moreHits = await timer.time(
+      "retrieve",
+      () => retrieve({ client, collection, mode, filter, query: refinedQuery, embed: embed2, sourceCount, freshnessBoost })
+    );
     allHits = dedupeHits([...allHits, ...moreHits]);
-    ({ sufficient, refinedQuery } = await checkSufficiency(chatJSON2, question, allHits));
+    ({ sufficient, refinedQuery } = await timer.time("sufficiency", () => checkSufficiency(chatJSON2, question, allHits)));
   }
   const topHits = allHits.slice(0, FINAL_TOP_K);
   if (topHits.length === 0 || !hasDiscriminativeSignal(topHits)) {
     const msg = "I couldn't find anything in scope that relates to this question. Try adding a relevant source first, or widening the working set/library filters.";
     onToken(msg, msg);
-    return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 } };
+    return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 }, timings: timer.summary() };
   }
   onStatus("Writing an answer...");
   const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`).join("\n\n");
-  const answer = await chatStream2(
+  const answer = await timer.time("generate", () => chatStream2(
     [
       {
         role: "system",
@@ -71411,7 +71454,7 @@ ${contextBlock}
 Question: ${question}` }
     ],
     onToken
-  );
+  ));
   const citationValidation = validateCitations(answer, topHits.length);
   return {
     answer,
@@ -71428,7 +71471,8 @@ Question: ${question}` }
       chunkIndex: h.chunkIndex
     })),
     abstained: false,
-    citationValidation
+    citationValidation,
+    timings: { ...timer.summary(), hops, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size }
   };
 }
 
@@ -71465,27 +71509,55 @@ async function applyConfig() {
   collectionReady = false;
   return cfg;
 }
-var modelsReady = false;
-var loadingPromise = null;
-async function ensureModelsLoaded(cfg) {
-  const needsWebLLM = cfg.llmProvider === "webllm";
-  if (modelsReady) return;
-  if (!loadingPromise) {
-    loadingPromise = (async () => {
-      broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
-      await loadEmbedder((p) => broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: p }));
-      if (needsWebLLM) {
-        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
-        await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
-      }
-      modelsReady = true;
-      broadcast({ type: "MODELS_READY" });
-    })().catch((err) => {
-      loadingPromise = null;
+var embedderReady = false;
+var embedderPromise = null;
+var llmReady = false;
+var llmPromise = null;
+function describeProgress(label, p) {
+  if (typeof p === "string") return p;
+  if (!p) return null;
+  if (typeof p.text === "string") return p.text;
+  if (p.status === "progress" && typeof p.progress === "number") {
+    return `Downloading ${label} model... ${Math.round(p.progress)}%`;
+  }
+  return null;
+}
+function reportModelProgress(stage, label, p) {
+  const detail = describeProgress(label, p);
+  if (detail) broadcast({ type: "MODEL_PROGRESS", stage, detail });
+}
+function ensureEmbedderLoaded() {
+  if (embedderReady) return Promise.resolve();
+  if (!embedderPromise) {
+    broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
+    embedderPromise = loadEmbedder((p) => reportModelProgress("embedder", "embedding", p)).then(() => {
+      embedderReady = true;
+    }).catch((err) => {
+      embedderPromise = null;
       throw err;
     });
   }
-  return loadingPromise;
+  return embedderPromise;
+}
+function ensureLLMLoaded(cfg) {
+  if (cfg.llmProvider !== "webllm" || llmReady) return Promise.resolve();
+  if (!llmPromise) {
+    broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
+    llmPromise = loadLLM((p) => reportModelProgress("llm", "language", p)).then(() => {
+      llmReady = true;
+    }).catch((err) => {
+      llmPromise = null;
+      throw err;
+    });
+  }
+  return llmPromise;
+}
+async function ensureModelsLoaded(cfg) {
+  await Promise.all([ensureEmbedderLoaded(), ensureLLMLoaded(cfg)]);
+  broadcast({ type: "MODELS_READY" });
+}
+function modelsReadyFor(cfg) {
+  return embedderReady && (cfg.llmProvider !== "webllm" || llmReady);
 }
 async function ensureCollectionReady() {
   if (collectionReady) return;
@@ -71500,14 +71572,16 @@ function describeQdrantError(err) {
 applyConfig().catch((err) => console.warn("[offscreen] config load on startup failed:", err));
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_STATE") {
-    sendResponse({ ok: true, modelsReady });
+    getConfig().then((cfg) => sendResponse({ ok: true, modelsReady: modelsReadyFor(cfg), embedderReady })).catch(() => sendResponse({ ok: true, modelsReady: false, embedderReady }));
+    return true;
+  }
+  if (message.type === "WARM_EMBEDDER") {
+    ensureEmbedderLoaded().catch((err) => console.warn("[offscreen] warm-up failed:", err));
+    sendResponse({ ok: true });
     return false;
   }
   if (message.type === "CONFIG_CHANGED") {
-    applyConfig().then((cfg) => {
-      if (cfg.llmProvider !== "webllm") modelsReady = false;
-      sendResponse({ ok: true });
-    }).catch((err) => sendResponse({ ok: false, error: String(err) }));
+    applyConfig().then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
   if (message.type === "QDRANT_HEALTH") {
@@ -71525,8 +71599,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "INDEX_SOURCE") {
     (async () => {
       try {
-        const cfg = await getConfig();
-        await ensureModelsLoaded(cfg);
+        await ensureEmbedderLoaded();
         await ensureCollectionReady();
         const result = await indexSource(qdrant, LIBRARY_COLLECTION, {
           canonicalUrl: message.url,
@@ -71534,8 +71607,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           text: message.text,
           embed,
           observedTabId: message.tabId,
-          observedSessionId: message.sessionId
+          observedSessionId: message.sessionId,
+          onProgress: (p) => broadcast({ type: "INDEX_PROGRESS", tabId: message.tabId, ...p })
         });
+        console.info("[offscreen] indexed", message.url, result.skipped ? "(unchanged)" : `${result.chunkCount} chunks`, result.timings);
         sendResponse({ ok: true, ...result });
       } catch (err) {
         console.error("[offscreen] indexing failed:", err);
@@ -71592,6 +71667,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (status) => broadcast({ type: "AGENT_STATUS", status }),
           (delta, full) => broadcast({ type: "ANSWER_TOKEN", delta, full })
         );
+        console.info("[offscreen] answered", result.timings);
         broadcast({ type: "ANSWER_DONE", ...result });
       } catch (err) {
         console.error("[offscreen] answering failed:", err);
