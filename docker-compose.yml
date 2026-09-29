@@ -1,0 +1,74 @@
+# Local Qdrant for Ask My Tabs.
+#
+# This is the ONLY server this project runs. It is bound to 127.0.0.1 only (not 0.0.0.0), so
+# nothing outside this machine can reach it. The browser extension's offscreen document talks to
+# it over plain HTTP at http://127.0.0.1:6333.
+#
+# Read this before running it:
+#   - Anything with access to THIS machine (other local users, other local processes, malware)
+#     can read or write everything indexed here: tab text, embeddings, and page URLs/titles.
+#     Docker does not add a security boundary against other software running as your own user.
+#   - Qdrant itself makes no outbound network calls. The extension separately fetches model
+#     weights (bge-small-en-v1.5 from Hugging Face, Qwen2.5-1.5B from the WebLLM/MLC model CDN)
+#     directly from the browser on first use -- that traffic is NOT local. Do not read "local
+#     Qdrant" as "all network traffic is localhost"; it isn't.
+#   - No analytics, telemetry opt-in, or remote upload of tab content is configured anywhere in
+#     this stack. QDRANT__TELEMETRY_DISABLED is set below to turn off Qdrant's own anonymous
+#     usage ping as well, so no metadata about your local usage leaves the machine via Qdrant
+#     either.
+#
+# Image is pinned by tag AND digest (not `latest`) so `docker compose pull` can't silently move
+# you to a different Qdrant version. Verified locally: this tag/digest pair pulls and runs, and
+# its collections API matches what src/lib/qdrant.js expects (see DECISIONS.md).
+#
+# Commands:
+#   docker compose up -d       Start Qdrant (creates the named volume on first run).
+#   docker compose down        Stop Qdrant. The named volume (and everything indexed) survives.
+#   docker compose down -v     Stop AND delete the named volume -- full reset, library is gone.
+#   docker compose logs -f     Tail Qdrant's logs.
+#
+# State-preserving upgrade (bump the pinned tag/digest below, then):
+#   docker compose pull
+#   docker compose up -d
+#   The named volume is untouched by an image swap; Qdrant migrates its own on-disk format on
+#   startup within a major version. Check https://qdrant.tech release notes before crossing a
+#   major version, and take a volume backup first if you're not on a throwaway eval collection:
+#     docker run --rm -v ask-my-tabs_qdrant_storage:/qdrant/storage -v "$PWD":/backup \
+#       qdrant/qdrant:v1.11.0 tar czf /backup/qdrant-storage-backup.tgz -C /qdrant/storage .
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.11.0@sha256:cc802bd2841ec2026725e19619075982311ce4d7182dc8c03a0c8e6817bb9170
+    container_name: ask-my-tabs-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333" # REST API -- what the extension and eval harness use
+      - "127.0.0.1:6334:6334" # gRPC -- unused by this project, exposed only for `qdrant-client` debugging
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__TELEMETRY_DISABLED=true
+    healthcheck:
+      # The qdrant image (Debian bookworm slim) has neither curl nor wget, but it does have
+      # bash, so the healthcheck opens a raw HTTP/1.1 request over /dev/tcp instead of adding a
+      # tool the upstream image doesn't ship. Verified against the actual running container
+      # (see DECISIONS.md) -- `wget`-based healthchecks copied from other Compose examples fail
+      # silently forever on this image because there is no `wget` to run.
+      # CMD (not CMD-SHELL): CMD-SHELL on this image runs /bin/sh, which is dash and does not
+      # support /dev/tcp. Verified live -- dash fails with "Directory nonexistent" on this exact
+      # image. bash -c does support it.
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -c 15 <&3 | grep -q 'HTTP/1.1 200 OK'",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  qdrant_storage:
+    name: ask-my-tabs_qdrant_storage

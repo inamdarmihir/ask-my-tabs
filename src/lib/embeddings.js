@@ -4,6 +4,7 @@
 // general-purpose language model pressed into service as one.
 
 import { pipeline, env } from "@huggingface/transformers";
+import { hasWebGPU } from "./gpu.js";
 
 env.allowLocalModels = false;
 
@@ -11,24 +12,34 @@ const MODEL_ID = "Xenova/bge-small-en-v1.5";
 
 let extractorPromise = null;
 
+// Unlike WebLLM (src/lib/llm.js), the embedder has a real WASM fallback, so lack of WebGPU is
+// not fatal here -- it's just slower. Checking navigator.gpu up front (instead of always trying
+// WebGPU first and catching the failure) avoids a noisy failed-init attempt in the console on
+// every machine without a GPU adapter, which on Windows and Linux without a dGPU is common, not
+// exotic. This is the same code path on every desktop OS; there is nothing OS-specific here.
 async function getExtractor(onProgress) {
   if (!extractorPromise) {
     extractorPromise = (async () => {
-      try {
-        return await pipeline("feature-extraction", MODEL_ID, {
-          device: "webgpu",
-          dtype: "fp16",
-          progress_callback: onProgress,
-        });
-      } catch (err) {
-        console.warn("[embeddings] WebGPU unavailable, falling back to WASM:", err);
-        return await pipeline("feature-extraction", MODEL_ID, {
-          device: "wasm",
-          dtype: "fp16",
-          progress_callback: onProgress,
-        });
+      if (await hasWebGPU()) {
+        try {
+          return await pipeline("feature-extraction", MODEL_ID, {
+            device: "webgpu",
+            dtype: "fp16",
+            progress_callback: onProgress,
+          });
+        } catch (err) {
+          console.warn("[embeddings] WebGPU init failed despite an adapter being present, falling back to WASM:", err);
+        }
       }
-    })();
+      return await pipeline("feature-extraction", MODEL_ID, {
+        device: "wasm",
+        dtype: "fp16",
+        progress_callback: onProgress,
+      });
+    })().catch((err) => {
+      extractorPromise = null; // don't cache a failure -- allow retry on the next "Load models" click
+      throw err;
+    });
   }
   return extractorPromise;
 }

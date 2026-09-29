@@ -8,7 +8,7 @@
   <body>
     <header>
       <h1>Ask My Tabs</h1>
-      <p class="tagline">Private, on-device Q&amp;A across your open tabs.</p>
+      <p class="tagline">Private, on-device Q&amp;A over a local Qdrant reading library.</p>
     </header>
 
     <section id="model-banner" class="banner">
@@ -16,17 +16,45 @@
       <button id="load-models-btn">Load models (~1.1GB, one-time)</button>
     </section>
 
+    <section id="qdrant-banner" class="banner banner-error" hidden>
+      <span id="qdrant-status-text">Can't reach Qdrant.</span>
+      <button id="qdrant-retry-btn">Retry</button>
+    </section>
+
     <section id="working-set">
       <div class="section-header">
         <h2>Working set</h2>
         <button id="add-tab-btn">+ Add current tab</button>
       </div>
+      <p class="hint">Live tabs to search right now. Removing a tab here only stops searching it
+        -- the indexed copy stays in your library. Use Library below to delete it for real.</p>
       <ul id="tab-list"></ul>
       <p id="empty-state" class="empty-state">No tabs added yet. Add a few, then ask a question.</p>
     </section>
 
+    <section id="library-section">
+      <div class="section-header">
+        <h2>Library</h2>
+        <button id="refresh-library-btn" class="secondary">Refresh</button>
+      </div>
+      <p class="hint">Everything indexed and persisted across restarts, in your local Qdrant.</p>
+      <div id="library-filters" class="filters-row">
+        <select id="domain-filter">
+          <option value="">All domains</option>
+        </select>
+        <input id="date-filter" type="date" title="Only show sources indexed on or after this date" />
+        <button id="clear-filters-btn" class="secondary">Clear</button>
+      </div>
+      <ul id="library-list"></ul>
+      <p id="library-empty-state" class="empty-state">Nothing in the library yet.</p>
+    </section>
+
     <section id="ask-section">
-      <textarea id="question-input" rows="2" placeholder="Ask something across your added tabs..."></textarea>
+      <textarea id="question-input" rows="2" placeholder="Ask something across your sources..."></textarea>
+      <div class="scope-row">
+        <label><input type="radio" name="scope" value="working-set" checked /> Working set</label>
+        <label><input type="radio" name="scope" value="library" /> Entire library</label>
+      </div>
       <button id="ask-btn">Ask</button>
     </section>
 
@@ -34,6 +62,9 @@
 
     <section id="answer-section" hidden>
       <div id="answer-text"></div>
+      <p id="citation-warning" class="citation-warning" hidden></p>
+      <p class="snapshot-notice">Citations point to stored snapshots, not necessarily the live
+        page. A page can change after it was indexed.</p>
       <ol id="citations"></ol>
     </section>
 
