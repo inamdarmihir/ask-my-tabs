@@ -50,6 +50,7 @@ export async function loadEmbedder(onProgress) {
 
 // Returns one Float32Array per input string, mean-pooled and L2-normalized so cosine
 // similarity reduces to a plain dot product in the vector store.
+// Used for DOCUMENT embedding at index time -- do not add the query prefix here.
 export async function embed(texts, onProgress) {
   const extractor = await getExtractor(onProgress);
   const output = await extractor(texts, { pooling: "mean", normalize: true });
@@ -60,4 +61,18 @@ export async function embed(texts, onProgress) {
     vectors.push(Float32Array.from(flat.slice(i * dim, (i + 1) * dim)));
   }
   return vectors;
+}
+
+// bge-small-en-v1.5 was trained with a query-time instruction prefix that signals to the model
+// that the input is a search query, not a passage to be indexed. Omitting it at query time
+// measurably degrades query-document alignment (see DECISIONS.md). The prefix is applied here,
+// not at the caller site, so no other module needs to know about it.
+//
+// The model call receives the prefixed text; the returned vectors correspond to the original
+// unprefixed texts (one vector per input text in the same order). The prefix is never stored.
+const BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
+
+export async function embedQuery(texts, onProgress) {
+  const prefixed = texts.map((t) => `${BGE_QUERY_PREFIX}${t}`);
+  return embed(prefixed, onProgress);
 }

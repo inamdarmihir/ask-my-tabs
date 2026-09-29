@@ -6,6 +6,8 @@ const entryPoints = [
   { in: "src/background.js", out: "background" },
   { in: "src/offscreen.js", out: "offscreen" },
   { in: "src/popup.js", out: "popup" },
+  { in: "src/settings.js", out: "settings" },
+  { in: "src/onboarding.js", out: "onboarding" },
 ];
 
 const options = {

@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Welcome to Ask My Tabs</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-content" style="text-align: center;">
+        <img src="icons/icon48.png" alt="Ask My Tabs Logo" style="vertical-align: middle; margin-right: 8px;">
+        <h1 style="display: inline-block; vertical-align: middle; margin-top: 4px;">Welcome to Ask My Tabs</h1>
+        <p class="tagline" style="margin-top: 8px;">Let's get your AI and storage set up. You only need to do this once.</p>
+      </div>
+    </header>
+
+    <main>
+      <section class="card" id="step-1">
+        <h2>Step 1: Vector Storage</h2>
+        <p class="hint">Where should we store your indexed tabs? This requires a vector database.</p>
+        
+        <div class="radio-group">
+          <label>
+            <input type="radio" name="obQdrantMode" value="cloud" checked />
+            <strong>Qdrant Cloud</strong> <span class="badge recommended">Recommended</span>
+            <div class="radio-hint">Free tier available at <a href="https://cloud.qdrant.io" target="_blank">cloud.qdrant.io</a>. No installation required.</div>
+          </label>
+          <label>
+            <input type="radio" name="obQdrantMode" value="local" />
+            <strong>Local Docker</strong>
+            <div class="radio-hint">Private, offline. Requires you to run <code>docker compose up -d</code>.</div>
+          </label>
+        </div>
+
+        <div id="ob-qdrant-cloud-fields" class="sub-fields">
+          <div class="field">
+            <label for="ob-qdrant-url">Cluster URL</label>
+            <input type="url" id="ob-qdrant-url" placeholder="https://abc.qdrant.io:6333" />
+          </div>
+          <div class="field">
+            <label for="ob-qdrant-apikey">API Key</label>
+            <input type="password" id="ob-qdrant-apikey" placeholder="Enter your Qdrant API key" />
+          </div>
+        </div>
+
+        <div class="actions-row" style="justify-content: flex-end;">
+          <span id="ob-qdrant-status" class="status-badge" style="margin-right: 12px;"></span>
+          <button id="ob-step1-btn" class="primary">Test & Continue →</button>
+        </div>
+      </section>
+
+      <section class="card" id="step-2" style="opacity: 0.5; pointer-events: none;">
+        <h2>Step 2: Language Model</h2>
+        <p class="hint">Which AI should write your answers?</p>
+        
+        <div class="radio-group">
+          <label>
+            <input type="radio" name="obLlmType" value="api" checked />
+            <strong>API Provider</strong> <span class="badge recommended">Recommended</span>
+            <div class="radio-hint">Fastest. Requires an API key (most have generous free tiers).</div>
+          </label>
+          <label>
+            <input type="radio" name="obLlmType" value="local" />
+            <strong>Local (WebLLM)</strong>
+            <div class="radio-hint">Private, runs on your GPU. ~1.5GB initial download.</div>
+          </label>
+        </div>
+
+        <div id="ob-llm-api-fields" class="sub-fields">
+          <div class="field">
+            <label for="ob-llm-provider">Provider</label>
+            <select id="ob-llm-provider">
+              <option value="openai">OpenAI</option>
+              <option value="groq">Groq</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+            <div class="link-hint">Get an API key: <a id="ob-llm-key-url" href="https://platform.openai.com/api-keys" target="_blank">Here</a></div>
+          </div>
+          <div class="field">
+            <label for="ob-llm-apikey">API Key</label>
+            <input type="password" id="ob-llm-apikey" placeholder="Enter API key" />
+          </div>
+        </div>
+
+        <div class="actions-row" style="justify-content: flex-end;">
+          <button id="ob-step2-btn" class="primary">Finish Setup ✓</button>
+        </div>
+      </section>
+
+      <section class="card" id="step-3" style="display: none; text-align: center; padding: 48px 24px;">
+        <h2 style="font-size: 24px; color: var(--success); margin-bottom: 12px;">You're all set!</h2>
+        <p style="margin-bottom: 32px; font-size: 15px;">Ask My Tabs is ready to use.</p>
+        <button id="ob-done-btn" class="primary large">Close this tab & open the extension</button>
+      </section>
+
+    </main>
+
+    <script type="module" src="dist/onboarding.bundle.js"></script>
+  </body>
+</html>

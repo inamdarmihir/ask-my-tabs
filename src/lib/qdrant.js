@@ -11,10 +11,11 @@ export const SPARSE_VECTOR_NAME = "sparse";
 export const DENSE_SIZE = 384; // must match src/lib/embeddings.js's bge-small-en-v1.5 output
 
 export class QdrantConnectionError extends Error {
-  constructor(baseUrl, cause) {
+  constructor(url, cause) {
     super(
-      `Can't reach Qdrant at ${baseUrl}. Is it running? Start it with ` +
-        `"docker compose up -d" in the project root, then try again.`,
+      `Can't reach Qdrant at ${url}. ` +
+        `If using local Docker, run "docker compose up -d" in the project root. ` +
+        `If using Qdrant Cloud, check your URL and API key in Settings.`,
     );
     this.name = "QdrantConnectionError";
     this.cause = cause;
@@ -37,13 +38,23 @@ export class QdrantApiError extends Error {
   }
 }
 
-export function makeClient(baseUrl = "http://127.0.0.1:6333") {
+// `url` is the full Qdrant base URL (e.g. "http://127.0.0.1:6333" for local Docker or
+// "https://xyz.qdrant.io:6333" for Qdrant Cloud). `apiKey` is optional: when non-empty,
+// every request carries an `Authorization: Bearer {apiKey}` header, which is the auth
+// mechanism Qdrant Cloud uses. Local instances ignore the header harmlessly.
+export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
+  const baseUrl = url;
+  const authHeaders = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+
   async function request(path, { method = "GET", body } = {}) {
     let res;
     try {
       res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: body ? { "Content-Type": "application/json" } : undefined,
+        headers: {
+          ...authHeaders,
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
@@ -65,9 +76,10 @@ export function makeClient(baseUrl = "http://127.0.0.1:6333") {
 
     // Bounded, fast liveness check for the UI's "Qdrant down" banner. Distinguishes
     // "unreachable" from "reachable but not ready yet" so the guidance can differ.
+    // Auth headers are included because Qdrant Cloud requires them on all endpoints.
     async health() {
       try {
-        const res = await fetch(`${baseUrl}/readyz`, { method: "GET" });
+        const res = await fetch(`${baseUrl}/readyz`, { method: "GET", headers: authHeaders });
         return { reachable: true, ready: res.ok };
       } catch (err) {
         return { reachable: false, ready: false, error: String(err) };

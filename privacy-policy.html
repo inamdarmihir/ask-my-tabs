@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Ask My Tabs - Privacy Policy</title>
+    <style>
+      body {
+        max-width: 680px;
+        margin: 40px auto;
+        padding: 0 24px;
+        font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #1a1a1a;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #111214; color: #f0f0f0; }
+        a { color: #6ea3ff; }
+      }
+      h1, h2 { margin-top: 2em; }
+      h1 { font-size: 24px; margin-top: 0; }
+      h2 { font-size: 18px; }
+      p, li { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>Privacy Policy</h1>
+    <p><em>Last updated: October 2026</em></p>
+
+    <p>Ask My Tabs is designed around a strict local-first and bring-your-own-backend privacy model. The extension developer collects absolutely no data about you, your tabs, your queries, or your usage.</p>
+
+    <h2>1. Data Collection & Storage</h2>
+    <ul>
+      <li><strong>No Telemetry:</strong> We do not track your usage, clicks, or installed extensions.</li>
+      <li><strong>Local Indexing:</strong> By default, your tab content is embedded locally on your device (using WebGPU or WASM) and sent directly to the Qdrant instance you configure.</li>
+      <li><strong>Settings:</strong> Your configuration (API keys, URLs) is stored locally on your device using Chrome's local storage API. It is never synced to the cloud by us.</li>
+    </ul>
+
+    <h2>2. Third-Party Services</h2>
+    <p>Depending on how you configure the extension, it communicates directly with third parties you authorize:</p>
+    <ul>
+      <li><strong>Vector Storage (Qdrant):</strong> If you configure a Qdrant Cloud URL, the text from tabs you add to your working set is sent directly to your Qdrant cluster.</li>
+      <li><strong>Language Models (OpenAI, Gemini, Groq):</strong> If you configure an API-based LLM provider, your search queries and the relevant text snippets retrieved from your vector database are sent to that provider to generate an answer. This data is subject to that provider's privacy policy.</li>
+      <li><strong>HuggingFace (Model weights):</strong> The extension downloads the embedding model weights (~130MB) and optionally the WebLLM language model weights (~1.5GB) directly from HuggingFace's CDN on first load. No personal data is sent in these requests.</li>
+    </ul>
+
+    <h2>3. Permissions Justification</h2>
+    <ul>
+      <li><code>tabs</code> and <code>activeTab</code>: Required to read the URL, title, and text content of the page you are currently viewing when you click "Add current tab".</li>
+      <li><code>scripting</code>: Required to extract clean, readable text from the current tab.</li>
+      <li><code>storage</code>: Required to save your settings and keep track of your active working set.</li>
+      <li><code>offscreen</code>: Required to run the local AI models (embedder and WebLLM) in the background without tying up the visible popup UI.</li>
+    </ul>
+
+    <h2>4. Open Source</h2>
+    <p>Ask My Tabs is open source. You can verify exactly how it handles your data by reviewing the source code at <a href="https://github.com/inamdarmihir/ask-my-tabs">github.com/inamdarmihir/ask-my-tabs</a>.</p>
+  </body>
+</html>

@@ -1,3 +1,85 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// src/lib/config.js
+var config_exports = {};
+__export(config_exports, {
+  ALL_API_PROVIDERS: () => ALL_API_PROVIDERS,
+  CONFIG_KEY: () => CONFIG_KEY,
+  DEFAULT_CONFIG: () => DEFAULT_CONFIG,
+  GEMINI_PROVIDER: () => GEMINI_PROVIDER,
+  OPENAI_COMPATIBLE_PROVIDERS: () => OPENAI_COMPATIBLE_PROVIDERS,
+  getConfig: () => getConfig,
+  saveConfig: () => saveConfig
+});
+async function getConfig() {
+  if (typeof chrome === "undefined" || !chrome?.storage?.local) {
+    return { ...DEFAULT_CONFIG };
+  }
+  const stored = await chrome.storage.local.get(CONFIG_KEY);
+  return { ...DEFAULT_CONFIG, ...stored[CONFIG_KEY] || {} };
+}
+async function saveConfig(patch) {
+  if (typeof chrome === "undefined" || !chrome?.storage?.local) return;
+  const current = await getConfig();
+  const next = { ...current, ...patch };
+  await chrome.storage.local.set({ [CONFIG_KEY]: next });
+  return next;
+}
+var CONFIG_KEY, OPENAI_COMPATIBLE_PROVIDERS, GEMINI_PROVIDER, ALL_API_PROVIDERS, DEFAULT_CONFIG;
+var init_config = __esm({
+  "src/lib/config.js"() {
+    CONFIG_KEY = "ask-my-tabs-config";
+    OPENAI_COMPATIBLE_PROVIDERS = {
+      openai: {
+        label: "OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        defaultModel: "gpt-4o-mini",
+        keyHint: "sk-...",
+        keyUrl: "https://platform.openai.com/api-keys"
+      },
+      groq: {
+        label: "Groq",
+        baseUrl: "https://api.groq.com/openai/v1",
+        defaultModel: "llama-3.3-70b-versatile",
+        keyHint: "gsk_...",
+        keyUrl: "https://console.groq.com/keys"
+      }
+    };
+    GEMINI_PROVIDER = {
+      gemini: {
+        label: "Google Gemini",
+        defaultModel: "gemini-1.5-flash",
+        keyHint: "AIza...",
+        keyUrl: "https://aistudio.google.com/app/apikey"
+      }
+    };
+    ALL_API_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
+    DEFAULT_CONFIG = {
+      // Qdrant connection. An empty apiKey means no Authorization header (local Docker default).
+      qdrantUrl: "http://127.0.0.1:6333",
+      qdrantApiKey: "",
+      // LLM. "webllm" requires WebGPU + a ~1.5 GB model download. API providers need a key.
+      llmProvider: "webllm",
+      // "openai" | "groq" | "gemini" | "webllm"
+      llmApiKey: "",
+      llmModel: "",
+      // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+      // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
+      // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
+      retrievalMode: "hybrid"
+      // "hybrid" | "dense" | "sparse"
+    };
+  }
+});
+
 // src/lib/ids.js
 var DEFAULT_TRACKING_PARAMS = [
   "utm_source",
@@ -167,9 +249,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     purgeWorkingSetEntry(message.tabId).then((list) => sendResponse({ ok: true, workingSet: list })).catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
+  if (message.type === "SET_CONFIG") {
+    (async () => {
+      try {
+        const { saveConfig: saveConfig2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+        await saveConfig2(message.patch);
+        if (await hasOffscreenDocument()) {
+          await chrome.runtime.sendMessage({ type: "CONFIG_CHANGED" }).catch(() => {
+          });
+        }
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err) });
+      }
+    })();
+    return true;
+  }
 });
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html") }).catch(() => {
+    });
+  }
 });
 chrome.runtime.onStartup.addListener(() => {
   getSessionId().catch((err) => console.error("[background] session id init failed:", err));

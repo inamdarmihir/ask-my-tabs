@@ -26,6 +26,7 @@ const el = {
   answerText: document.getElementById("answer-text"),
   citationWarning: document.getElementById("citation-warning"),
   citations: document.getElementById("citations"),
+  settingsBtn: document.getElementById("settings-btn"),
 };
 
 function sendToBackground(message) {
@@ -424,6 +425,9 @@ el.dateFilter.addEventListener("change", refreshLibrary);
 document.querySelectorAll('input[name="scope"]').forEach((r) => r.addEventListener("change", async () => {
   renderWorkingSet(await getWorkingSet());
 }));
+el.settingsBtn.addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
+});
 
 (async () => {
   renderWorkingSet(await getWorkingSet());

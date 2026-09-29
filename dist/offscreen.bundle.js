@@ -48010,6 +48010,11 @@ async function embed(texts, onProgress) {
   }
   return vectors;
 }
+var BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
+async function embedQuery(texts, onProgress) {
+  const prefixed = texts.map((t) => `${BGE_QUERY_PREFIX}${t}`);
+  return embed(prefixed, onProgress);
+}
 
 // node_modules/@mlc-ai/web-llm/lib/index.js
 var require$$3 = "MLC_DUMMY_REQUIRE_VAR";
@@ -70485,14 +70490,192 @@ async function chatStream(messages, onToken) {
   return full;
 }
 
+// src/lib/config.js
+var CONFIG_KEY = "ask-my-tabs-config";
+var OPENAI_COMPATIBLE_PROVIDERS = {
+  openai: {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    keyHint: "sk-...",
+    keyUrl: "https://platform.openai.com/api-keys"
+  },
+  groq: {
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    defaultModel: "llama-3.3-70b-versatile",
+    keyHint: "gsk_...",
+    keyUrl: "https://console.groq.com/keys"
+  }
+};
+var GEMINI_PROVIDER = {
+  gemini: {
+    label: "Google Gemini",
+    defaultModel: "gemini-1.5-flash",
+    keyHint: "AIza...",
+    keyUrl: "https://aistudio.google.com/app/apikey"
+  }
+};
+var ALL_API_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
+var DEFAULT_CONFIG = {
+  // Qdrant connection. An empty apiKey means no Authorization header (local Docker default).
+  qdrantUrl: "http://127.0.0.1:6333",
+  qdrantApiKey: "",
+  // LLM. "webllm" requires WebGPU + a ~1.5 GB model download. API providers need a key.
+  llmProvider: "webllm",
+  // "openai" | "groq" | "gemini" | "webllm"
+  llmApiKey: "",
+  llmModel: "",
+  // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+  // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
+  // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
+  retrievalMode: "hybrid"
+  // "hybrid" | "dense" | "sparse"
+};
+async function getConfig() {
+  if (typeof chrome === "undefined" || !chrome?.storage?.local) {
+    return { ...DEFAULT_CONFIG };
+  }
+  const stored = await chrome.storage.local.get(CONFIG_KEY);
+  return { ...DEFAULT_CONFIG, ...stored[CONFIG_KEY] || {} };
+}
+
+// src/lib/llm-api.js
+var JSON_TEMPERATURE = 0.2;
+var STREAM_TEMPERATURE = 0.3;
+async function openAIRequest(messages, { apiKey, model, baseUrl, stream = false, responseFormat }) {
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE,
+      stream,
+      ...responseFormat ? { response_format: responseFormat } : {}
+    })
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${baseUrl} API error ${res.status}: ${text}`);
+  }
+  return res;
+}
+function toGeminiPayload(messages, { model, stream = false }) {
+  const systemMsg = messages.find((m) => m.role === "system");
+  const conversationMsgs = messages.filter((m) => m.role !== "system");
+  return {
+    endpoint: stream ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent` : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    body: {
+      ...systemMsg ? { system_instruction: { parts: [{ text: systemMsg.content }] } } : {},
+      contents: conversationMsgs.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }]
+      })),
+      generationConfig: {
+        temperature: stream ? STREAM_TEMPERATURE : JSON_TEMPERATURE
+      }
+    }
+  };
+}
+async function geminiRequest(messages, { apiKey, model, stream = false }) {
+  const { endpoint, body } = toGeminiPayload(messages, { model, stream });
+  const res = await fetch(`${endpoint}?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`Gemini API error ${res.status}: ${text}`);
+  }
+  return res;
+}
+function resolveModel(provider, model) {
+  if (model) return model;
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-4o-mini";
+}
+function providerBaseUrl(provider) {
+  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
+}
+async function chatJSONApi(messages, { provider, apiKey, model }) {
+  const resolvedModel = resolveModel(provider, model);
+  if (provider === "gemini") {
+    const res2 = await geminiRequest(messages, { apiKey, model: resolvedModel });
+    const json2 = await res2.json();
+    return json2.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  }
+  const baseUrl = providerBaseUrl(provider);
+  const res = await openAIRequest(messages, {
+    apiKey,
+    model: resolvedModel,
+    baseUrl,
+    responseFormat: { type: "json_object" }
+  });
+  const json = await res.json();
+  return json.choices?.[0]?.message?.content ?? "";
+}
+async function chatStreamApi(messages, { provider, apiKey, model }, onToken) {
+  const resolvedModel = resolveModel(provider, model);
+  let full = "";
+  if (provider === "gemini") {
+    const res2 = await geminiRequest(messages, { apiKey, model: resolvedModel, stream: true });
+    const text = await res2.text();
+    let chunks;
+    try {
+      chunks = JSON.parse(text);
+    } catch {
+      chunks = [];
+    }
+    for (const chunk of chunks) {
+      const delta = chunk.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      if (delta) {
+        full += delta;
+        onToken(delta, full);
+      }
+    }
+    return full;
+  }
+  const baseUrl = providerBaseUrl(provider);
+  const res = await openAIRequest(messages, { apiKey, model: resolvedModel, baseUrl, stream: true });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") break;
+      try {
+        const parsed = JSON.parse(data);
+        const delta = parsed.choices?.[0]?.delta?.content ?? "";
+        if (delta) {
+          full += delta;
+          onToken(delta, full);
+        }
+      } catch {
+      }
+    }
+  }
+  return full;
+}
+
 // src/lib/qdrant.js
 var DENSE_VECTOR_NAME = "dense";
 var SPARSE_VECTOR_NAME = "sparse";
 var DENSE_SIZE = 384;
 var QdrantConnectionError = class extends Error {
-  constructor(baseUrl, cause) {
+  constructor(url, cause) {
     super(
-      `Can't reach Qdrant at ${baseUrl}. Is it running? Start it with "docker compose up -d" in the project root, then try again.`
+      `Can't reach Qdrant at ${url}. If using local Docker, run "docker compose up -d" in the project root. If using Qdrant Cloud, check your URL and API key in Settings.`
     );
     this.name = "QdrantConnectionError";
     this.cause = cause;
@@ -70512,13 +70695,18 @@ var QdrantApiError = class extends Error {
     this.body = body;
   }
 };
-function makeClient(baseUrl = "http://127.0.0.1:6333") {
+function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
+  const baseUrl = url;
+  const authHeaders = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   async function request(path, { method = "GET", body } = {}) {
     let res;
     try {
       res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: body ? { "Content-Type": "application/json" } : void 0,
+        headers: {
+          ...authHeaders,
+          ...body ? { "Content-Type": "application/json" } : {}
+        },
         body: body ? JSON.stringify(body) : void 0
       });
     } catch (err) {
@@ -70535,9 +70723,10 @@ function makeClient(baseUrl = "http://127.0.0.1:6333") {
     baseUrl,
     // Bounded, fast liveness check for the UI's "Qdrant down" banner. Distinguishes
     // "unreachable" from "reachable but not ready yet" so the guidance can differ.
+    // Auth headers are included because Qdrant Cloud requires them on all endpoints.
     async health() {
       try {
-        const res = await fetch(`${baseUrl}/readyz`, { method: "GET" });
+        const res = await fetch(`${baseUrl}/readyz`, { method: "GET", headers: authHeaders });
         return { reachable: true, ready: res.ok };
       } catch (err) {
         return { reachable: false, ready: false, error: String(err) };
@@ -71192,7 +71381,6 @@ Question: ${question}` }
 }
 
 // src/lib/constants.js
-var QDRANT_URL = "http://127.0.0.1:6333";
 var LIBRARY_COLLECTION = "ask_my_tabs_library";
 var DEFAULT_RETRIEVAL_MODE = "hybrid";
 var DEFAULT_FRESHNESS_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1e3;
@@ -71202,23 +71390,42 @@ function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {
   });
 }
-var qdrant = makeClient(QDRANT_URL);
+var qdrant = makeClient({ url: "http://127.0.0.1:6333", apiKey: "" });
 var collectionReady = false;
-async function ensureCollectionReady() {
-  if (collectionReady) return;
-  await qdrant.ensureCollection(LIBRARY_COLLECTION);
-  collectionReady = true;
+function buildLLMFunctions(cfg) {
+  if (cfg.llmProvider === "webllm") {
+    return {
+      chatJSON,
+      chatStream
+    };
+  }
+  const { llmProvider: provider, llmApiKey: apiKey, llmModel: model } = cfg;
+  return {
+    chatJSON: (messages) => chatJSONApi(messages, { provider, apiKey, model }),
+    chatStream: (messages, onToken) => chatStreamApi(messages, { provider, apiKey, model }, onToken)
+  };
+}
+var llmFunctions = { chatJSON, chatStream };
+async function applyConfig() {
+  const cfg = await getConfig();
+  qdrant = makeClient({ url: cfg.qdrantUrl, apiKey: cfg.qdrantApiKey });
+  llmFunctions = buildLLMFunctions(cfg);
+  collectionReady = false;
+  return cfg;
 }
 var modelsReady = false;
 var loadingPromise = null;
-async function ensureModelsLoaded() {
+async function ensureModelsLoaded(cfg) {
+  const needsWebLLM = cfg.llmProvider === "webllm";
   if (modelsReady) return;
   if (!loadingPromise) {
     loadingPromise = (async () => {
       broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
       await loadEmbedder((p) => broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: p }));
-      broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model..." });
-      await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
+      if (needsWebLLM) {
+        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~1.5 GB)..." });
+        await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
+      }
       modelsReady = true;
       broadcast({ type: "MODELS_READY" });
     })().catch((err) => {
@@ -71228,22 +71435,35 @@ async function ensureModelsLoaded() {
   }
   return loadingPromise;
 }
+async function ensureCollectionReady() {
+  if (collectionReady) return;
+  await qdrant.ensureCollection(LIBRARY_COLLECTION);
+  collectionReady = true;
+}
 function describeQdrantError(err) {
   if (err instanceof QdrantConnectionError) return { kind: "down", message: err.message };
   if (err instanceof QdrantSchemaError) return { kind: "schema", message: err.message };
   return { kind: "other", message: String(err?.message || err) };
 }
+applyConfig().catch((err) => console.warn("[offscreen] config load on startup failed:", err));
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_STATE") {
     sendResponse({ ok: true, modelsReady });
     return false;
+  }
+  if (message.type === "CONFIG_CHANGED") {
+    applyConfig().then((cfg) => {
+      if (cfg.llmProvider !== "webllm") modelsReady = false;
+      sendResponse({ ok: true });
+    }).catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
   }
   if (message.type === "QDRANT_HEALTH") {
     qdrant.health().then((health) => sendResponse({ ok: true, health })).catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
   if (message.type === "LOAD_MODELS") {
-    ensureModelsLoaded().then(() => sendResponse({ ok: true })).catch((err) => {
+    getConfig().then((cfg) => ensureModelsLoaded(cfg)).then(() => sendResponse({ ok: true })).catch((err) => {
       console.error("[offscreen] model load failed:", err);
       broadcast({ type: "MODEL_ERROR", error: String(err) });
       sendResponse({ ok: false, error: String(err) });
@@ -71253,7 +71473,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "INDEX_SOURCE") {
     (async () => {
       try {
-        await ensureModelsLoaded();
+        const cfg = await getConfig();
+        await ensureModelsLoaded(cfg);
         await ensureCollectionReady();
         const result = await indexSource(qdrant, LIBRARY_COLLECTION, {
           canonicalUrl: message.url,
@@ -71299,19 +71520,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true, started: true });
     (async () => {
       try {
-        await ensureModelsLoaded();
+        const cfg = await getConfig();
+        await ensureModelsLoaded(cfg);
         await ensureCollectionReady();
         const result = await answerQuestion(
           message.question,
           {
             client: qdrant,
             collection: LIBRARY_COLLECTION,
-            mode: message.mode || DEFAULT_RETRIEVAL_MODE,
+            mode: message.mode || cfg.retrievalMode || DEFAULT_RETRIEVAL_MODE,
             filter: message.filter,
             tabTitles: message.tabTitles,
-            embed,
-            chatJSON,
-            chatStream
+            embed: embedQuery,
+            // query-time embedding uses the bge instruction prefix
+            chatJSON: llmFunctions.chatJSON,
+            chatStream: llmFunctions.chatStream
           },
           (status) => broadcast({ type: "AGENT_STATUS", status }),
           (delta, full) => broadcast({ type: "ANSWER_TOKEN", delta, full })

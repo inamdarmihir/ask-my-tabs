@@ -171,10 +171,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
+
+  // Saves a config patch and signals the offscreen document to rebuild its clients immediately.
+  if (message.type === "SET_CONFIG") {
+    (async () => {
+      try {
+        const { saveConfig } = await import("./lib/config.js");
+        await saveConfig(message.patch);
+        if (await hasOffscreenDocument()) {
+          await chrome.runtime.sendMessage({ type: "CONFIG_CHANGED" }).catch(() => {});
+        }
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err) });
+      }
+    })();
+    return true;
+  }
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
+  // Open onboarding only on a genuine first install, never on extension updates.
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html") }).catch(() => {});
+  }
 });
 
 chrome.runtime.onStartup.addListener(() => {
