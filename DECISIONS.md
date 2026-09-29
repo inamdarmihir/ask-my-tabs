@@ -180,4 +180,19 @@ tablet/iPad." Findings, verified rather than assumed:
   surface itself) -- explicitly out of scope for this version, matching the original prompt's "no
   store listing, no cloud path this version" scoping philosophy.
 
+## Findings moved from the README
+
+- **Embedding precision.** `dtype: "q8"` loaded about three times faster but silently broke
+  retrieval: an unrelated sentence pair scored a higher cosine (0.69) than a similar pair (0.62).
+  `fp16` kept the correct ordering (0.59 similar vs. 0.30 unrelated), so `src/lib/embeddings.js`
+  uses `fp16`.
+- **Missing `offscreen` permission.** An early `manifest.json` omitted `"offscreen"`, which left
+  `chrome.offscreen` undefined and made `createDocument()` throw on every install. Found by
+  loading the extension unpacked; fixed by adding the permission.
+- **Why an offscreen document.** Popups are destroyed on blur and MV3 service workers are
+  ephemeral with inconsistent WebGPU access, so models and the agent loop live in a
+  `chrome.offscreen` document.
+- **Why not a WASM vector index.** At a few hundred chunks, brute-force search is already
+  microseconds; storage moved to Qdrant for durability, filtering, and hybrid fusion instead.
+
 (Further entries appended per milestone below.)
