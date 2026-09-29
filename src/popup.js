@@ -1,5 +1,6 @@
 import { buildScopeFilter } from "./lib/filters.js";
 import { citationStatus } from "./lib/freshness.js";
+import { getConfig, ALL_API_PROVIDERS } from "./lib/config.js";
 
 const WORKING_SET_KEY = "workingSet";
 
@@ -210,7 +211,19 @@ async function deleteFromLibrary(source) {
   refreshLibrary();
 }
 
+// Which answer model is active, so the banner can say so. A hosted provider only needs the
+// small local embedding model; only WebLLM needs the large download. Showing this also makes a
+// misconfiguration (API key entered but "Local" still selected) visible at a glance.
+let answerModelLabel = null; // null = WebLLM (local)
+
 async function refreshModelStatus() {
+  try {
+    const cfg = await getConfig();
+    const provider = ALL_API_PROVIDERS[cfg.llmProvider];
+    answerModelLabel = provider ? `${provider.label} (${cfg.llmModel || provider.defaultModel})` : null;
+  } catch {
+    answerModelLabel = null;
+  }
   try {
     const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
     setModelsReady(!!state?.modelsReady);
@@ -222,9 +235,17 @@ async function refreshModelStatus() {
 function setModelsReady(ready) {
   el.modelBanner.classList.toggle("ready", ready);
   el.loadModelsBtn.hidden = ready;
-  el.modelStatusText.textContent = ready
-    ? "Models loaded and running locally."
-    : "Models not loaded yet.";
+  if (answerModelLabel) {
+    el.loadModelsBtn.textContent = "Load embedding model (~70 MB)";
+    el.modelStatusText.textContent = ready
+      ? `Ready. Answers by ${answerModelLabel}; embeddings run locally.`
+      : `Answers by ${answerModelLabel}. Embedding model loads on first use.`;
+  } else {
+    el.loadModelsBtn.textContent = "Load local models (~0.6 GB, one-time)";
+    el.modelStatusText.textContent = ready
+      ? "Models loaded and running locally."
+      : "Local answer model not loaded yet.";
+  }
 }
 
 // The offscreen bundle is large (~8 MB), so right after ENSURE_OFFSCREEN creates the document its

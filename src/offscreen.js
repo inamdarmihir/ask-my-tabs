@@ -79,7 +79,7 @@ async function ensureModelsLoaded(cfg) {
       await loadEmbedder((p) => broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: p }));
 
       if (needsWebLLM) {
-        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~1.5 GB)..." });
+        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
         await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
       }
 

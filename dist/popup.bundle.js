@@ -28,6 +28,56 @@ function citationStatus({ hasNewerSnapshot, liveCheck }) {
   return "archived";
 }
 
+// src/lib/config.js
+var CONFIG_KEY = "ask-my-tabs-config";
+var OPENAI_COMPATIBLE_PROVIDERS = {
+  openai: {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    keyHint: "sk-...",
+    keyUrl: "https://platform.openai.com/api-keys"
+  },
+  groq: {
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    defaultModel: "llama-3.3-70b-versatile",
+    keyHint: "gsk_...",
+    keyUrl: "https://console.groq.com/keys"
+  }
+};
+var GEMINI_PROVIDER = {
+  gemini: {
+    label: "Google Gemini",
+    defaultModel: "gemini-1.5-flash",
+    keyHint: "AIza...",
+    keyUrl: "https://aistudio.google.com/app/apikey"
+  }
+};
+var ALL_API_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
+var DEFAULT_CONFIG = {
+  // Qdrant connection. An empty apiKey means no Authorization header (local Docker default).
+  qdrantUrl: "http://127.0.0.1:6333",
+  qdrantApiKey: "",
+  // LLM. "webllm" requires WebGPU + a ~0.5 GB one-time model download. API providers need a key.
+  llmProvider: "webllm",
+  // "openai" | "groq" | "gemini" | "webllm"
+  llmApiKey: "",
+  llmModel: "",
+  // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+  // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
+  // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
+  retrievalMode: "hybrid"
+  // "hybrid" | "dense" | "sparse"
+};
+async function getConfig() {
+  if (typeof chrome === "undefined" || !chrome?.storage?.local) {
+    return { ...DEFAULT_CONFIG };
+  }
+  const stored = await chrome.storage.local.get(CONFIG_KEY);
+  return { ...DEFAULT_CONFIG, ...stored[CONFIG_KEY] || {} };
+}
+
 // src/popup.js
 var WORKING_SET_KEY = "workingSet";
 var el = {
@@ -215,7 +265,15 @@ This permanently removes its indexed chunks from Qdrant. This is different from 
   await setWorkingSet(list);
   refreshLibrary();
 }
+var answerModelLabel = null;
 async function refreshModelStatus() {
+  try {
+    const cfg = await getConfig();
+    const provider = ALL_API_PROVIDERS[cfg.llmProvider];
+    answerModelLabel = provider ? `${provider.label} (${cfg.llmModel || provider.defaultModel})` : null;
+  } catch {
+    answerModelLabel = null;
+  }
   try {
     const state = await chrome.runtime.sendMessage({ type: "GET_STATE" });
     setModelsReady(!!state?.modelsReady);
@@ -226,7 +284,13 @@ async function refreshModelStatus() {
 function setModelsReady(ready) {
   el.modelBanner.classList.toggle("ready", ready);
   el.loadModelsBtn.hidden = ready;
-  el.modelStatusText.textContent = ready ? "Models loaded and running locally." : "Models not loaded yet.";
+  if (answerModelLabel) {
+    el.loadModelsBtn.textContent = "Load embedding model (~70 MB)";
+    el.modelStatusText.textContent = ready ? `Ready. Answers by ${answerModelLabel}; embeddings run locally.` : `Answers by ${answerModelLabel}. Embedding model loads on first use.`;
+  } else {
+    el.loadModelsBtn.textContent = "Load local models (~0.6 GB, one-time)";
+    el.modelStatusText.textContent = ready ? "Models loaded and running locally." : "Local answer model not loaded yet.";
+  }
 }
 async function checkQdrantHealth() {
   const attempts = 6;

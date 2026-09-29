@@ -66,7 +66,7 @@ var init_config = __esm({
       // Qdrant connection. An empty apiKey means no Authorization header (local Docker default).
       qdrantUrl: "http://127.0.0.1:6333",
       qdrantApiKey: "",
-      // LLM. "webllm" requires WebGPU + a ~1.5 GB model download. API providers need a key.
+      // LLM. "webllm" requires WebGPU + a ~0.5 GB one-time model download. API providers need a key.
       llmProvider: "webllm",
       // "openai" | "groq" | "gemini" | "webllm"
       llmApiKey: "",

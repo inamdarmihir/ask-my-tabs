@@ -70449,7 +70449,9 @@ var MLCEngine = class {
 };
 
 // src/lib/llm.js
-var MODEL_ID2 = "Qwen2.5-1.5B-Instruct-q4f16_1-MLC";
+var MODEL_ID2 = "Qwen3-0.6B-q4f16_1-MLC";
+var NO_THINKING = { enable_thinking: false };
+var APP_CONFIG = { ...prebuiltAppConfig, cacheBackend: "indexeddb" };
 var enginePromise = null;
 async function loadLLM(onProgress) {
   if (!enginePromise) {
@@ -70458,6 +70460,7 @@ async function loadLLM(onProgress) {
         throw new Error(WEBGPU_UNAVAILABLE_MESSAGE);
       }
       return CreateMLCEngine(MODEL_ID2, {
+        appConfig: APP_CONFIG,
         initProgressCallback: onProgress
       });
     })().catch((err) => {
@@ -70472,7 +70475,8 @@ async function chatJSON(messages) {
   const reply = await engine.chat.completions.create({
     messages,
     temperature: 0.2,
-    response_format: { type: "json_object" }
+    response_format: { type: "json_object" },
+    extra_body: NO_THINKING
   });
   return reply.choices[0].message.content;
 }
@@ -70481,7 +70485,8 @@ async function chatStream(messages, onToken) {
   const stream = await engine.chat.completions.create({
     messages,
     temperature: 0.3,
-    stream: true
+    stream: true,
+    extra_body: NO_THINKING
   });
   let full = "";
   for await (const chunk of stream) {
@@ -70525,7 +70530,7 @@ var DEFAULT_CONFIG = {
   // Qdrant connection. An empty apiKey means no Authorization header (local Docker default).
   qdrantUrl: "http://127.0.0.1:6333",
   qdrantApiKey: "",
-  // LLM. "webllm" requires WebGPU + a ~1.5 GB model download. API providers need a key.
+  // LLM. "webllm" requires WebGPU + a ~0.5 GB one-time model download. API providers need a key.
   llmProvider: "webllm",
   // "openai" | "groq" | "gemini" | "webllm"
   llmApiKey: "",
@@ -71470,7 +71475,7 @@ async function ensureModelsLoaded(cfg) {
       broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
       await loadEmbedder((p) => broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: p }));
       if (needsWebLLM) {
-        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~1.5 GB)..." });
+        broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
         await loadLLM((p) => broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: p }));
       }
       modelsReady = true;
