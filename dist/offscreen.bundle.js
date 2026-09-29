@@ -47968,6 +47968,10 @@ var WEBGPU_UNAVAILABLE_MESSAGE = `WebGPU isn't available in this Chrome profile 
 
 // src/lib/embeddings.js
 __webpack_exports__env.allowLocalModels = false;
+if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+  __webpack_exports__env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("dist/ort/");
+  __webpack_exports__env.backends.onnx.wasm.numThreads = 1;
+}
 var MODEL_ID = "Xenova/bge-small-en-v1.5";
 var extractorPromise = null;
 async function getExtractor(onProgress) {

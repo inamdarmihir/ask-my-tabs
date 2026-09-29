@@ -227,17 +227,28 @@ function setModelsReady(ready) {
     : "Models not loaded yet.";
 }
 
+// The offscreen bundle is large (~8 MB), so right after ENSURE_OFFSCREEN creates the document its
+// message listener may not be registered yet and sendMessage rejects with "Receiving end does
+// not exist". Retry briefly before reporting Qdrant as down, so a slow startup isn't mistaken
+// for an unreachable server.
 async function checkQdrantHealth() {
-  try {
-    await sendToBackground({ type: "ENSURE_OFFSCREEN" });
-    const res = await chrome.runtime.sendMessage({ type: "QDRANT_HEALTH" });
-    const healthy = res?.ok && res.health?.reachable && res.health?.ready;
-    setQdrantHealthy(healthy, res);
-    return healthy;
-  } catch {
-    setQdrantHealthy(false);
-    return false;
+  const attempts = 6;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await sendToBackground({ type: "ENSURE_OFFSCREEN" });
+      const res = await chrome.runtime.sendMessage({ type: "QDRANT_HEALTH" });
+      if (res) {
+        const healthy = !!(res.ok && res.health?.reachable && res.health?.ready);
+        setQdrantHealthy(healthy, res);
+        return healthy;
+      }
+    } catch (err) {
+      console.warn(`[popup] Qdrant health attempt ${i + 1}/${attempts} failed:`, err);
+    }
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
   }
+  setQdrantHealthy(false);
+  return false;
 }
 
 function setQdrantHealthy(healthy, res) {

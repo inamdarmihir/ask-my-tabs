@@ -8,6 +8,14 @@ import { hasWebGPU } from "./gpu.js";
 
 env.allowLocalModels = false;
 
+// Load the ONNX runtime from the extension package (copied to dist/ort/ by build.js) instead of
+// the default CDN, which the extension CSP blocks. Single-threaded: multi-threaded WASM needs
+// cross-origin isolation, which extension pages don't have.
+if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+  env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL("dist/ort/");
+  env.backends.onnx.wasm.numThreads = 1;
+}
+
 const MODEL_ID = "Xenova/bge-small-en-v1.5";
 
 let extractorPromise = null;

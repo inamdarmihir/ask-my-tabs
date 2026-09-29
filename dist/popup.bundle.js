@@ -229,16 +229,23 @@ function setModelsReady(ready) {
   el.modelStatusText.textContent = ready ? "Models loaded and running locally." : "Models not loaded yet.";
 }
 async function checkQdrantHealth() {
-  try {
-    await sendToBackground({ type: "ENSURE_OFFSCREEN" });
-    const res = await chrome.runtime.sendMessage({ type: "QDRANT_HEALTH" });
-    const healthy = res?.ok && res.health?.reachable && res.health?.ready;
-    setQdrantHealthy(healthy, res);
-    return healthy;
-  } catch {
-    setQdrantHealthy(false);
-    return false;
+  const attempts = 6;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await sendToBackground({ type: "ENSURE_OFFSCREEN" });
+      const res = await chrome.runtime.sendMessage({ type: "QDRANT_HEALTH" });
+      if (res) {
+        const healthy = !!(res.ok && res.health?.reachable && res.health?.ready);
+        setQdrantHealthy(healthy, res);
+        return healthy;
+      }
+    } catch (err) {
+      console.warn(`[popup] Qdrant health attempt ${i + 1}/${attempts} failed:`, err);
+    }
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
   }
+  setQdrantHealthy(false);
+  return false;
 }
 function setQdrantHealthy(healthy, res) {
   el.qdrantBanner.hidden = !!healthy;
