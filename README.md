@@ -141,6 +141,39 @@ ground: meaningfully smaller than the full fp32 weights, and the similar/unrelat
 stayed correct (0.59 vs. 0.30) when tested the same way. That's what's shipped, and that test is
 the reason `dtype: "fp16"` appears in `src/lib/embeddings.js` instead of the smaller `q8`.
 
+## Platform support
+
+Short version: **this works the same way on Chrome for Windows and Chrome for macOS, and cannot
+work on Chrome for iPad/iPhone (or Chrome for Android) no matter what code changes here** -- that
+last part is Apple's/Google's platform policy, not a bug in this extension.
+
+| Platform | Status | Why |
+| --- | --- | --- |
+| Chrome on Windows (desktop) | ✅ Supported | MV3 (`chrome.offscreen`, `chrome.scripting`, `chrome.storage.session`), WebGPU, and WASM are all standard desktop-Chrome features -- nothing in this codebase branches on OS. See below for the one real caveat (WebGPU driver/policy availability). |
+| Chrome on macOS (desktop) | ✅ Supported | Same as Windows -- same MV3 APIs, same WebGPU/WASM stack. Verified: the pinned local Qdrant image (`qdrant/qdrant:v1.11.0`, see `docker-compose.yml`) is a real **multi-platform** manifest with both `linux/amd64` and `linux/arm64` builds under the pinned digest (checked with `docker manifest inspect`, not assumed), so Docker Desktop on Apple Silicon and Intel Macs both pull the correct native image, not an emulated one. |
+| Chrome on Linux (desktop) / ChromeOS | ⚠️ Likely fine, not explicitly tested this pass | Same MV3/WebGPU/WASM stack; this whole project was *developed* in a Linux sandbox, just one without a GPU (see `DECISIONS.md`), so the extension-loading and Qdrant-fetch paths are exercised on Linux already -- WebGPU itself just wasn't available to test there. |
+| **Chrome on iPad / iPhone (iOS/iPadOS)** | ❌ **Not possible, architecturally** | Apple requires every browser on iOS/iPadOS -- including Chrome -- to use Apple's WebKit engine, not Chrome's own Blink engine. Chrome extensions (Manifest V3, `chrome.offscreen`, `chrome.scripting`, etc.) are Blink APIs that don't exist in Chrome-for-iOS at all. This is true for *every* Chrome extension, not something specific to this one, and no change to this repo's code can add an API that Chrome-for-iOS doesn't expose. If tablet use matters, the only paths are a fundamentally different product (a web app, or a native iOS app) or a third-party WebKit browser that reimplements a subset of the MV3 extension surface itself (e.g. Orion, Teak) -- outside this repo's scope. |
+| Chrome on Android (phone/tablet) | ❌ Not possible, same reason | Google's own support docs confirm Chrome for Android does not implement the desktop extension API either -- this is not iOS-specific, it's "extensions are a desktop-Chrome feature." |
+
+**The one real Windows/macOS caveat -- and it's per-machine, not per-OS:** `src/lib/llm.js`
+(WebLLM, the answer-writing model) requires a working WebGPU adapter and has no fallback. Whether
+that's available depends on the machine's GPU, drivers, and any org policy disabling GPU access
+in Chrome -- exactly as likely on a Windows laptop with an old integrated GPU as on a Mac with GPU
+access restricted by MDM. `src/lib/gpu.js` checks `navigator.gpu.requestAdapter()` up front so a
+missing adapter surfaces as one clear message in the popup (check `chrome://gpu`, update drivers,
+check org policy) instead of a cryptic WASM-backend error several layers down in WebLLM. The
+embedder (`src/lib/embeddings.js`) does not have this problem -- it has a real WASM fallback and
+runs (more slowly) even with no GPU at all, on any of the three desktop OSes.
+
+**Docker/Qdrant is also a per-machine, not per-OS, requirement.** `docker-compose.yml` needs
+Docker Desktop (or another Docker Engine) running on whichever machine hosts the extension's
+browser profile -- Windows via WSL2 or Hyper-V, macOS via Apple's Virtualization framework -- and
+binds Qdrant to `127.0.0.1` only, which both platforms' Docker Desktop support natively. This
+repo doesn't (and can't, without a fundamentally different architecture) make Qdrant reachable
+from a *different* machine than the one Chrome is running on, including a tablet -- see
+[Known limitations](#known-limitations) for what "iPad support" would actually require if it were
+ever in scope, which it is not for this version.
+
 ## Known limitations
 
 - **WebLLM's model download and answer generation are unverified end-to-end** (see table above)

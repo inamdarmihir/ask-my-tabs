@@ -133,4 +133,51 @@ also self-heals a previously-failed cleanup by deleting other stale hashes as a 
 successful no-op check. `qdrant.js`'s now-unused `getContentHash` (the racy timestamp-based
 helper) was deleted rather than left around unused.
 
+## Cross-platform Chrome support (Windows / macOS / iPad) -- explicit user request
+
+Investigated on request: "make sure this extension works in Chrome no matter Windows, Mac, or
+tablet/iPad." Findings, verified rather than assumed:
+
+- **The codebase has zero OS-specific branches.** Grepped `src/` for `navigator.platform`,
+  `userAgent`, `win32`/`darwin`, etc. -- none exist. Every API used (`chrome.offscreen`,
+  `chrome.scripting`, `chrome.storage.session`, `chrome.tabs.onRemoved`/`onUpdated`, WebGPU,
+  WASM, `fetch`) is a standard desktop-Chrome feature identical on Windows, macOS, and Linux.
+  `manifest.json`/`popup.html`/`offscreen.html` all reference bundle paths with forward slashes,
+  which is correct and required regardless of host OS (these are URL paths inside the extension's
+  own origin, not filesystem paths -- there was never a backslash risk here to begin with).
+- **The pinned Qdrant image is genuinely multi-platform under the one pinned digest.** Ran
+  `docker manifest inspect qdrant/qdrant@sha256:cc802bd...` (the exact digest in
+  `docker-compose.yml`) and confirmed it resolves to an OCI image *index* containing both a
+  `linux/amd64` and a `linux/arm64` manifest -- not a single-architecture digest that would quietly
+  break (or silently run under slow emulation) on Apple Silicon Macs while working fine on Intel
+  Macs/Windows. This was checked directly against the real registry, not assumed from the tag.
+- **WebLLM (`src/lib/llm.js`) had no capability pre-check and no way to retry after a failed
+  load.** Added `src/lib/gpu.js` (`hasWebGPU()`, checking `navigator.gpu.requestAdapter()`) so a
+  missing/disabled GPU adapter surfaces as one clear, actionable, deliberately OS-neutral message
+  instead of a raw WASM-backend error several layers inside WebLLM. This is a per-machine fact
+  (driver, hardware, org policy), never a per-OS one -- the message and tests (`tests/unit/gpu.test.js`)
+  explicitly avoid singling out Windows, macOS, or Linux. Also fixed: `loadLLM()`, `getExtractor()`
+  (`src/lib/embeddings.js`), and `ensureModelsLoaded()` (`src/offscreen.js`) all used to cache a
+  **failed** load promise forever, so a transient/fixable failure (updating a driver, closing a
+  GPU-heavy tab, flipping a `chrome://flags` entry) could never be retried within the same browser
+  session without reloading the whole extension. All three now clear their cached promise on
+  failure, and the popup's "Load models" button re-enables itself (`Retry load`) on `MODEL_ERROR`
+  instead of staying disabled with a stale "Loading..." label. This bug was platform-agnostic but
+  most likely to actually bite on Windows machines with no discrete GPU or GPU access disabled by
+  IT policy, which is a common real-world case, not an edge case.
+- **Chrome on iPad/iPhone (and Chrome on Android) cannot run this extension, or any Chrome
+  extension, at all -- verified against Apple's and Google's own stated platform constraints, not
+  assumed.** Apple requires every iOS/iPadOS browser, including Chrome, to use WebKit rather than
+  Chrome's own Blink engine (App Store review policy); Manifest V3 extension APIs
+  (`chrome.offscreen`, `chrome.scripting`, etc.) are Blink-only and do not exist in Chrome for iOS
+  at all -- there is no flag, permission, or code change in this repo that can add a Blink-only
+  API surface to a WebKit-based browser. Google's own support content separately confirms Chrome
+  for Android also does not implement the desktop extension API, so this is "extensions are a
+  desktop-Chrome-only feature," not an iOS-specific gap. Disclosed honestly in README's new
+  "Platform support" table rather than silently ignored or claimed as "supported." If tablet
+  support is ever actually required, it needs a different product (web app or native app, or
+  relying on a third-party WebKit browser like Orion/Teak that reimplements a subset of the MV3
+  surface itself) -- explicitly out of scope for this version, matching the original prompt's "no
+  store listing, no cloud path this version" scoping philosophy.
+
 (Further entries appended per milestone below.)
