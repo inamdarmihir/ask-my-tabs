@@ -19,11 +19,20 @@ vector database and a language model that you choose.
 
 - **Cited answers.** Every claim is tagged `[1]`, `[2]`, ... and mapped back to the page it came
   from. Out-of-range or invented citations are detected and flagged.
-- **Agentic RAG with deepagents.** With an OpenAI-compatible provider, a LangGraph research agent
-  plans, searches (hybrid BM25 + dense) and reads your pages as needed, then answers with citations that
-  are verified against what it actually retrieved. Falls back to a fast fixed pipeline. Toggle in Settings.
-- **Multi-hop retrieval.** The agent splits a comparative question into per-topic queries, checks
-  whether the results are sufficient, and issues one refined follow-up search when they are not.
+- **Agentic RAG with deepagents.** With OpenAI or Groq (or any OpenAI-compatible endpoint), a
+  [deepagents](https://github.com/langchain-ai/deepagents) research agent on LangGraph plans with todos,
+  lists your sources, runs hybrid searches, reads whole pages, and can delegate sub-questions to a
+  `researcher` subagent. Its citations are checked against the snippets its tools actually returned.
+  If it cannot run, the fast fixed pipeline answers instead. Toggle in Settings.
+- **Fast pipeline.** The on-device model and Gemini use a fixed path: plan one to three queries,
+  retrieve, run a sufficiency check with at most one refined follow-up search, then write the answer.
+  Comparative questions are split into per-topic queries.
+- **Read mode for summaries.** "Summarize this page" style questions read the page in order within a
+  character budget instead of relying on similarity search, which returns arbitrary pieces for them.
+- **Structure-aware extraction.** Pages are extracted with their line structure, and feeds such as
+  Hacker News or Reddit are detected and chunked so each item stays together with its points and stats.
+- **Chat threads.** Conversations are saved (up to 60), survive closing the popup or restarting the
+  browser, and keep follow-up context. Browse them from the history button.
 - **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2, b=0.75,
   IDF computed by Qdrant from live collection statistics) are fused with weighted Reciprocal Rank Fusion in a single Query API call.
   Dense-only and sparse-only modes are available in settings.
@@ -33,7 +42,8 @@ vector database and a language model that you choose.
   Filter the library by domain or by date indexed.
 - **Durable sources.** Pages are keyed by normalized URL, not by Chrome's reusable `tabId`.
   Re-adding an unchanged page is a no-op, and changed pages replace their previous snapshot.
-- **Flexible backends.** Local or cloud vector storage, and on-device or hosted language models.
+- **Flexible backends.** Local or cloud vector storage, and on-device or hosted language models,
+  including a custom OpenAI-compatible base URL (Azure, Ollama, LM Studio, a proxy).
 - **Prompt-injection guard.** Page text is passed to the model as untrusted data, with an explicit
   instruction not to follow anything inside it.
 
@@ -81,6 +91,16 @@ The model field can be set to any model the provider supports, and **Test key** 
 and model without spending tokens. Embeddings always run in the browser, regardless of the
 provider you pick.
 
+### Retrieval and agent mode
+
+| Setting | Values | Default |
+| --- | --- | --- |
+| Retrieval mode | `hybrid` (dense + BM25, RRF), `dense`, `sparse` | `hybrid` |
+| Agent mode | `deep` (research agent), `pipeline` (fixed path) | `deep` |
+
+The deep agent runs only with OpenAI-compatible providers (OpenAI, Groq, or a custom base URL) and
+an API key. WebLLM and Gemini always use the pipeline.
+
 ## Privacy
 
 What leaves your machine depends on the backends you choose:
@@ -107,7 +127,16 @@ Additional notes:
 chunks, embeds each chunk in the browser with a 23 MB model that ships inside the extension (no
 download, works offline), and upserts the chunks to Qdrant as named dense and sparse vectors. Point IDs are deterministic hashes of the source key and chunk index.
 
-**Answering.** The agent in [`src/lib/agent.js`](src/lib/agent.js) runs at most two hops:
+**Answering.** There are two paths, chosen in [`src/offscreen.js`](src/offscreen.js).
+
+*Deep agent* ([`src/lib/deep-agent.js`](src/lib/deep-agent.js)): used when agent mode is `deep` and
+the provider is OpenAI-compatible with a key. The agent has three tools, `list_sources`,
+`search_pages` (hybrid search) and `read_page`, plus planning and a `researcher` subagent. Every
+snippet a tool returns is numbered in a shared registry, and the final `[n]` citations are
+renumbered and kept only if they resolve to a real snippet. A recursion limit and a 150 s timeout
+bound a run, and any failure falls back to the pipeline.
+
+*Pipeline* ([`src/lib/agent.js`](src/lib/agent.js)): runs at most two hops:
 
 1. The language model plans one to three search queries from the question.
 2. Each query is embedded and searched in Qdrant in one Query API call: dense and sparse
@@ -125,7 +154,7 @@ outlives the popup and, unlike an MV3 service worker, has reliable DOM and WebGP
 popup / settings / onboarding  <->  background (service worker)  <->  offscreen document
                                                                         ├─ embeddings (transformers.js)
                                                                         ├─ LLM (WebLLM or provider API)
-                                                                        └─ agent loop -> Qdrant
+                                                                        └─ deep agent / pipeline -> Qdrant
 ```
 
 Design rationale and verified behaviors are recorded in [`DECISIONS.md`](DECISIONS.md).
@@ -166,19 +195,26 @@ offscreen.html           Hosts the models and agent loop
 privacy-policy.html      Privacy policy page
 src/
   background.js          Service worker: tab access, offscreen lifecycle
-  offscreen.js           Embedder, LLM, and agent loop host
-  popup.js / settings.js / onboarding.js
+  offscreen.js           Embedder, LLM, and agent host (chooses deep agent or pipeline)
+  popup/                 React popup: chat, history, pages, rich text
+  settings.js / onboarding.js
   lib/
-    agent.js             Multi-hop retrieval and answer generation
+    deep-agent.js        deepagents/LangGraph research agent, tools, citation registry
+    agent.js             Fixed pipeline: multi-hop retrieval and answer generation
+    reading.js           Read mode: ordered page reading for summaries, chat history
+    threads.js           Chat thread storage helpers
+    repetition.js        Detects and trims looping small-model output
+    timing.js            Stage timer for indexing and answer diagnostics
     qdrant.js            Qdrant REST adapter (collections, upsert, hybrid query)
     library.js           Indexing, snapshot replacement, source management
     embeddings.js        Dense embedding model wrapper (loads the bundled model)
     embedding-model.js   The one place that names the embedding model
     sparse.js            BM25 sparse vectors (stemmed, hashed, Qdrant-side IDF)
     llm.js               On-device WebLLM wrapper
-    llm-api.js           OpenAI, Groq, and Gemini clients
+    llm-api.js           OpenAI-compatible and Gemini clients
     config.js            Settings schema and storage
-    chunk.js, ids.js, filters.js, freshness.js, gpu.js, constants.js
+    chunk.js             Word and structure-aware chunking
+    ids.js, filters.js, freshness.js, gpu.js, constants.js
 models/                  Bundled embedding model (see scripts/fetch-models.js)
 eval/                    Retrieval eval harness and results
 scripts/                 Developer scripts
@@ -195,7 +231,7 @@ dist/                    Pre-built bundles
 - The library keeps only the latest snapshot of each source, not its history.
 - Navigating a tab after adding it does not re-index it. Remove and re-add the tab to refresh.
 - Upgrading from the earlier IndexedDB-only version does not migrate existing data.
-- The on-device model is small (1.5B parameters). Expect weaker synthesis than a hosted model.
+- The on-device model (Qwen3-0.6B) is small. Expect weaker synthesis than a hosted model.
 - Retrieval quality is measured on scientific abstracts (BEIR SciFact), where hybrid search did not
   beat dense-only. See [`eval/RESULTS.md`](eval/RESULTS.md) and [`DECISIONS.md`](DECISIONS.md).
 
