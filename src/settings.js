@@ -1,6 +1,6 @@
 import { getConfig, saveConfig, DEFAULT_CONFIG, OPENAI_COMPATIBLE_PROVIDERS, GEMINI_PROVIDER } from "./lib/config.js";
 import { makeClient } from "./lib/qdrant.js";
-import { testApiKey } from "./lib/llm-api.js";
+import { testApiKey, listModels } from "./lib/llm-api.js";
 
 const ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
 
@@ -22,6 +22,8 @@ const el = {
   llmKeyUrl: document.getElementById("llm-key-url"),
   testLlmBtn: document.getElementById("test-llm-btn"),
   llmStatus: document.getElementById("llm-status"),
+  listModelsBtn: document.getElementById("list-models-btn"),
+  modelList: document.getElementById("llm-model-list"),
 
   saveBtn: document.getElementById("save-btn"),
   saveStatus: document.getElementById("save-status"),
@@ -110,6 +112,18 @@ async function handleSave() {
   setTimeout(() => el.saveStatus.classList.remove("show"), 2500);
 }
 
+async function handleListModels() {
+  el.listModelsBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Loading models...";
+  const r = await listModels({ provider: el.llmProvider.value, apiKey: el.llmApiKey.value.trim() });
+  el.modelList.innerHTML = "";
+  for (const id of r.models) el.modelList.appendChild(Object.assign(document.createElement("option"), { value: id }));
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = r.ok ? `✓ ${r.models.length} models. Click the Model box to choose one.` : `✗ ${r.message}`;
+  el.listModelsBtn.disabled = false;
+}
+
 async function handleTestQdrant() {
   el.testQdrantBtn.disabled = true;
   el.qdrantStatus.className = "status-badge";
@@ -153,6 +167,7 @@ el.llmTypeRadios.forEach(r => r.addEventListener("change", updateLLMVisibility))
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.testQdrantBtn.addEventListener("click", handleTestQdrant);
 el.testLlmBtn.addEventListener("click", handleTestLLM);
+el.listModelsBtn.addEventListener("click", handleListModels);
 el.saveBtn.addEventListener("click", handleSave);
 
 el.resetBtn.addEventListener("click", async (e) => {

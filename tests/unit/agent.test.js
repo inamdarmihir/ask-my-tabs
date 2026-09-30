@@ -169,3 +169,15 @@ test("on-device model never gets the verify pass", async () => {
   await answerQuestion("how does caching work", { ...args, sourceCount: null }, noop, noop);
   assert.equal(calls, 1);
 });
+
+test("citations that survive the rewrite are stripped, not shown", async () => {
+  const { args } = harness();
+  args.client.scrollAll = async () => [pt("a", 0, "alpha"), pt("a", 1, "beta")];
+  args.chatJSON = async () => JSON.stringify({ intent: "lookup", question: "q", queries: ["q"] });
+  args.chatStream = async (m, onToken) => { const t = "Alpha [1] and beta [9]."; onToken(t, t); return t; };
+  const res = await answerQuestion("q", { ...args, sourceCount: 1, capable: true, tabTitles: ["A"] }, noop, noop);
+  assert.equal(res.answer, "Alpha [1] and beta.");
+  assert.deepEqual(res.citationValidation.invalid, []);
+  assert.deepEqual(res.citationValidation.stripped, [9]);
+  assert.equal(res.timings.repaired, true);
+});

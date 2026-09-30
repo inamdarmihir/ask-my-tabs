@@ -81,7 +81,9 @@
           </div>
           <div class="field">
             <label for="llm-model">Model (Optional)</label>
-            <input type="text" id="llm-model" placeholder="Leave blank for default" />
+            <input type="text" id="llm-model" list="llm-model-list" placeholder="Leave blank for default" />
+            <datalist id="llm-model-list"></datalist>
+            <button id="list-models-btn" class="secondary" type="button" style="margin-top:6px">Load models for this key</button>
             <div class="field-hint" id="llm-model-hint">Default: gpt-6-luna</div>
           </div>
           <div class="test-row">

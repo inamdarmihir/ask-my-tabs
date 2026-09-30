@@ -281,6 +281,7 @@ export async function answerQuestion(
     { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${q}` },
   ];
   const clean = (delta, full) => onToken(delta, stripThinking(full));
+  let repaired = false;
   let answer = stripThinking(await timer.time("generate", () => chatStream(messages, clean)));
 
   // 4. Verify (capable models only: a second pass is affordable there and pointless on a 0.6B
@@ -292,6 +293,7 @@ export async function answerQuestion(
       const problem = check.invalid.length
         ? `You cited [${check.invalid.join(", ")}], which don't exist. Valid citations are [1] to [${topHits.length}].`
         : "Your answer has no citations.";
+      repaired = true;
       answer = stripThinking(
         await timer.time("verify", () =>
           chatStream(
@@ -303,7 +305,14 @@ export async function answerQuestion(
     }
   }
 
-  const citationValidation = validateCitations(answer, topHits.length);
+  let citationValidation = validateCitations(answer, topHits.length);
+  // Anything still pointing outside [1..N] after the rewrite is removed rather than shown: a
+  // citation that resolves to nothing is worse than none.
+  if (citationValidation.invalid.length) {
+    const bad = new Set(citationValidation.invalid);
+    answer = answer.replace(/\s?\[(\d+)\]/g, (m, n) => (bad.has(Number(n)) ? "" : m));
+    citationValidation = { ...validateCitations(answer, topHits.length), stripped: [...bad] };
+  }
 
   return {
     answer,
@@ -321,6 +330,6 @@ export async function answerQuestion(
     })),
     abstained: false,
     citationValidation,
-    timings: { ...timer.summary(), intent, mode: mode_, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size },
+    timings: { ...timer.summary(), intent, mode: mode_, repaired, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size },
   };
 }

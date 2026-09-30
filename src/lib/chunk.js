@@ -22,10 +22,23 @@ export function chunkText(text, { chunkWords = 180, overlapWords = 30 } = {}) {
 // together), a "## " heading starts a fresh chunk once the current one has some substance, and the
 // last `overlapLines` lines repeat at the start of the next chunk for continuity. A single line
 // longer than maxChars is split by words.
-export function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHeading = 400 } = {}) {
+export function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHeading = 400, groupItems = false } = {}) {
+  // groupItems: numbered list entries ("12. Title", then its detail lines) become one indivisible
+  // unit, so a headline is never separated from its points and comment count.
+  let source = text.split("\n");
+  if (groupItems) {
+    const grouped = [];
+    for (const raw of source) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^\d{1,3}\.\s/.test(line) || grouped.length === 0) grouped.push(line);
+      else grouped[grouped.length - 1] += `\n${line}`;
+    }
+    source = grouped;
+  }
   const lines = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
+  for (const raw of source) {
+    const line = source === text ? raw.trim() : raw.trim();
     if (!line) continue;
     if (line.length <= maxChars) lines.push(line);
     else lines.push(...chunkText(line, { chunkWords: 150, overlapWords: 0 }));
@@ -40,7 +53,7 @@ export function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBe
     const isHeading = line.startsWith("## ");
     if (cur.length && (size + line.length + 1 > maxChars || (isHeading && size >= minBeforeHeading))) {
       flush();
-      const carry = isHeading ? [] : cur.slice(-overlapLines);
+      const carry = isHeading || overlapLines <= 0 ? [] : cur.slice(-overlapLines); // slice(-0) would copy everything
       cur = carry;
       size = carry.reduce((n, l) => n + l.length + 1, 0);
     }

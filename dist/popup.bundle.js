@@ -14934,6 +14934,13 @@ function Trace({ message }) {
           " Wrote the answer"
         ] })
       ] }),
+      t?.mode && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("p", { className: "trace-line", children: [
+        t.mode === "read" ? "Read the page directly" : "Searched for the best matches",
+        " \xB7 ",
+        t.intent,
+        " question",
+        t.repaired ? " \xB7 citations corrected" : ""
+      ] }),
       t?.stages && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "stages", children: Object.entries(t.stages).map(([k, v]) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "stage", children: [
         STAGE_LABELS[k] || k,
         " ",
@@ -15024,6 +15031,15 @@ function AssistantMessage({ message, workingSet, now, onRegenerate }) {
     message.content && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RichText, { text: message.content, citationCount: citations.length, onCite }),
     status === "pending" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Pending, { message, now }),
     status === "error" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "error-box", children: stale ? INTERRUPTED_MESSAGE : message.error }),
+    message.strippedCitations?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "warn-box", children: [
+      "Removed ",
+      message.strippedCitations.length,
+      " citation",
+      message.strippedCitations.length === 1 ? "" : "s",
+      " that didn't match any source (the model cited [",
+      message.strippedCitations.join(", "),
+      "]). Check the claims nearby."
+    ] }),
     message.invalidCitations?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "warn-box", children: [
       message.invalidCitations.length > 4 ? `${message.invalidCitations.length} citations in this answer (up to [${Math.max(...message.invalidCitations)}]) don't match any supplied snippet.` : `The answer cites [${message.invalidCitations.join(", ")}], which ${message.invalidCitations.length === 1 ? "doesn't" : "don't"} match any supplied snippet.`,
       " ",

@@ -76,6 +76,7 @@ export function eventToPatch(event, message) {
         timings: event.timings || null,
         abstained: !!event.abstained,
         invalidCitations: invalid,
+        strippedCitations: event.citationValidation?.stripped || [],
       };
     }
     case "ANSWER_ERROR":

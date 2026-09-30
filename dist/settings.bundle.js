@@ -354,6 +354,21 @@ async function testApiKey({ provider, apiKey, model }) {
   }
   return { ok: true, message: `Key works. Using ${resolvedModel}.` };
 }
+var NON_CHAT = /embed|whisper|tts|transcribe|dall-e|image|moderation|realtime|audio|davinci|babbage|search|similarity/i;
+async function listModels({ provider, apiKey }) {
+  if (!apiKey) return { ok: false, message: "Enter an API key first.", models: [] };
+  const url = provider === "gemini" ? `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=1000` : providerBaseUrl(provider) ? `${providerBaseUrl(provider)}/models` : null;
+  if (!url) return { ok: false, message: `Unknown provider "${provider}".`, models: [] };
+  try {
+    const res = await fetch(url, provider === "gemini" ? {} : { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) return { ok: false, message: res.status === 401 || res.status === 403 ? "The provider rejected this key." : `Provider error (${res.status}).`, models: [] };
+    const json = await res.json();
+    const ids = provider === "gemini" ? (json.models || []).filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => String(m.name).replace(/^models\//, "")) : (json.data || []).map((m) => m.id);
+    return { ok: true, models: ids.filter((id) => !NON_CHAT.test(id)).sort() };
+  } catch {
+    return { ok: false, message: "Couldn't reach the provider.", models: [] };
+  }
+}
 
 // src/settings.js
 var ALL_PROVIDERS = { ...OPENAI_COMPATIBLE_PROVIDERS, ...GEMINI_PROVIDER };
@@ -374,6 +389,8 @@ var el = {
   llmKeyUrl: document.getElementById("llm-key-url"),
   testLlmBtn: document.getElementById("test-llm-btn"),
   llmStatus: document.getElementById("llm-status"),
+  listModelsBtn: document.getElementById("list-models-btn"),
+  modelList: document.getElementById("llm-model-list"),
   saveBtn: document.getElementById("save-btn"),
   saveStatus: document.getElementById("save-status"),
   resetBtn: document.getElementById("reset-btn")
@@ -445,6 +462,17 @@ async function handleSave() {
   el.saveStatus.classList.add("show");
   setTimeout(() => el.saveStatus.classList.remove("show"), 2500);
 }
+async function handleListModels() {
+  el.listModelsBtn.disabled = true;
+  el.llmStatus.className = "status-badge";
+  el.llmStatus.textContent = "Loading models...";
+  const r = await listModels({ provider: el.llmProvider.value, apiKey: el.llmApiKey.value.trim() });
+  el.modelList.innerHTML = "";
+  for (const id of r.models) el.modelList.appendChild(Object.assign(document.createElement("option"), { value: id }));
+  el.llmStatus.className = `status-badge ${r.ok ? "success" : "error"}`;
+  el.llmStatus.textContent = r.ok ? `\u2713 ${r.models.length} models. Click the Model box to choose one.` : `\u2717 ${r.message}`;
+  el.listModelsBtn.disabled = false;
+}
 async function handleTestQdrant() {
   el.testQdrantBtn.disabled = true;
   el.qdrantStatus.className = "status-badge";
@@ -482,6 +510,7 @@ el.llmTypeRadios.forEach((r) => r.addEventListener("change", updateLLMVisibility
 el.llmProvider.addEventListener("change", updateLLMProviderHints);
 el.testQdrantBtn.addEventListener("click", handleTestQdrant);
 el.testLlmBtn.addEventListener("click", handleTestLLM);
+el.listModelsBtn.addEventListener("click", handleListModels);
 el.saveBtn.addEventListener("click", handleSave);
 el.resetBtn.addEventListener("click", async (e) => {
   e.preventDefault();

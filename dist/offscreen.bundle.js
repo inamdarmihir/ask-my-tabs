@@ -70986,10 +70986,22 @@ function chunkText(text, { chunkWords = 180, overlapWords = 30 } = {}) {
   }
   return chunks;
 }
-function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHeading = 400 } = {}) {
+function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHeading = 400, groupItems = false } = {}) {
+  let source = text.split("\n");
+  if (groupItems) {
+    const grouped = [];
+    for (const raw of source) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^\d{1,3}\.\s/.test(line) || grouped.length === 0) grouped.push(line);
+      else grouped[grouped.length - 1] += `
+${line}`;
+    }
+    source = grouped;
+  }
   const lines = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
+  for (const raw of source) {
+    const line = source === text ? raw.trim() : raw.trim();
     if (!line) continue;
     if (line.length <= maxChars) lines.push(line);
     else lines.push(...chunkText(line, { chunkWords: 150, overlapWords: 0 }));
@@ -71004,7 +71016,7 @@ function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHea
     const isHeading = line.startsWith("## ");
     if (cur.length && (size + line.length + 1 > maxChars || isHeading && size >= minBeforeHeading)) {
       flush();
-      const carry = isHeading ? [] : cur.slice(-overlapLines);
+      const carry = isHeading || overlapLines <= 0 ? [] : cur.slice(-overlapLines);
       cur = carry;
       size = carry.reduce((n, l) => n + l.length + 1, 0);
     }
@@ -71235,7 +71247,7 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
     }
     return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash, timings: timer.summary() };
   }
-  const pieces = text.includes("\n") ? chunkStructured(text) : chunkText(text);
+  const pieces = text.includes("\n") ? chunkStructured(text, pageKind === "feed" ? { maxChars: 240, overlapLines: 0, groupItems: true } : {}) : chunkText(text);
   if (pieces.length === 0) {
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
@@ -71606,12 +71618,14 @@ ${contextBlock}
 Question: ${q}` }
   ];
   const clean = (delta, full) => onToken(delta, stripThinking(full));
+  let repaired = false;
   let answer = stripThinking(await timer.time("generate", () => chatStream2(messages, clean)));
   if (capable) {
     const check = validateCitations(answer, topHits.length);
     if (check.invalid.length > 0 || check.citedCount === 0) {
       onStatus("Checking citations...");
       const problem = check.invalid.length ? `You cited [${check.invalid.join(", ")}], which don't exist. Valid citations are [1] to [${topHits.length}].` : "Your answer has no citations.";
+      repaired = true;
       answer = stripThinking(
         await timer.time(
           "verify",
@@ -71623,7 +71637,12 @@ Question: ${q}` }
       );
     }
   }
-  const citationValidation = validateCitations(answer, topHits.length);
+  let citationValidation = validateCitations(answer, topHits.length);
+  if (citationValidation.invalid.length) {
+    const bad = new Set(citationValidation.invalid);
+    answer = answer.replace(/\s?\[(\d+)\]/g, (m, n) => bad.has(Number(n)) ? "" : m);
+    citationValidation = { ...validateCitations(answer, topHits.length), stripped: [...bad] };
+  }
   return {
     answer,
     citations: topHits.map((h, i) => ({
@@ -71640,7 +71659,7 @@ Question: ${q}` }
     })),
     abstained: false,
     citationValidation,
-    timings: { ...timer.summary(), intent, mode: mode_, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size }
+    timings: { ...timer.summary(), intent, mode: mode_, repaired, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size }
   };
 }
 

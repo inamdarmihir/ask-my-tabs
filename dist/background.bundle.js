@@ -189,7 +189,8 @@ function eventToPatch(event, message) {
         citations: trimCitations(event.citations),
         timings: event.timings || null,
         abstained: !!event.abstained,
-        invalidCitations: invalid
+        invalidCitations: invalid,
+        strippedCitations: event.citationValidation?.stripped || []
       };
     }
     case "ANSWER_ERROR":

@@ -54,3 +54,11 @@ test("chunkStructured starts a new chunk at a heading and splits an overlong lin
   const long = chunkStructured("x ".repeat(2000).trim(), { maxChars: 500 });
   assert.ok(long.length > 1);
 });
+
+test("chunkStructured with overlapLines 0 never repeats lines across chunks", () => {
+  const lines = Array.from({ length: 30 }, (_, i) => `${i + 1}. Item ${i + 1} title (site.com)\n${i} points by u ${i} hours ago | ${i} comments`);
+  const chunks = chunkStructured(lines.join("\n"), { maxChars: 320, overlapLines: 0 });
+  const all = chunks.join("\n").split("\n");
+  assert.equal(new Set(all).size, all.length, "no duplicated lines");
+  assert.equal(all.length, 60);
+});

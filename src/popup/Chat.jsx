@@ -44,6 +44,11 @@ function Trace({ message }) {
       {open && (
         <div className="trace-body">
           <ul className="steps">{steps.map((st, i) => <li key={i}><CheckIcon /> {st}</li>)}<li><CheckIcon /> Wrote the answer</li></ul>
+          {t?.mode && (
+            <p className="trace-line">
+              {t.mode === "read" ? "Read the page directly" : "Searched for the best matches"} · {t.intent} question{t.repaired ? " · citations corrected" : ""}
+            </p>
+          )}
           {t?.stages && (
             <div className="stages">
               {Object.entries(t.stages).map(([k, v]) => <span key={k} className="stage">{STAGE_LABELS[k] || k} {formatMs(v)}</span>)}
@@ -144,6 +149,9 @@ function AssistantMessage({ message, workingSet, now, onRegenerate }) {
       {message.content && <RichText text={message.content} citationCount={citations.length} onCite={onCite} />}
       {status === "pending" && <Pending message={message} now={now} />}
       {status === "error" && <div className="error-box">{stale ? INTERRUPTED_MESSAGE : message.error}</div>}
+      {message.strippedCitations?.length > 0 && (
+        <div className="warn-box">Removed {message.strippedCitations.length} citation{message.strippedCitations.length === 1 ? "" : "s"} that didn't match any source (the model cited [{message.strippedCitations.join(", ")}]). Check the claims nearby.</div>
+      )}
       {message.invalidCitations?.length > 0 && (
         <div className="warn-box">
           {message.invalidCitations.length > 4

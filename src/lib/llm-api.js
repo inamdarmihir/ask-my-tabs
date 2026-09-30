@@ -227,3 +227,25 @@ export async function chatStreamApi(messages, { provider, apiKey, model }, onTok
   }
   return full;
 }
+
+// Chat-capable model ids the key can use, for the Settings model picker. OpenAI's list also holds
+// embedding, speech, image and moderation models, which can't answer questions, so they're dropped.
+const NON_CHAT = /embed|whisper|tts|transcribe|dall-e|image|moderation|realtime|audio|davinci|babbage|search|similarity/i;
+export async function listModels({ provider, apiKey }) {
+  if (!apiKey) return { ok: false, message: "Enter an API key first.", models: [] };
+  const url = provider === "gemini"
+    ? `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=1000`
+    : providerBaseUrl(provider) ? `${providerBaseUrl(provider)}/models` : null;
+  if (!url) return { ok: false, message: `Unknown provider "${provider}".`, models: [] };
+  try {
+    const res = await fetch(url, provider === "gemini" ? {} : { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) return { ok: false, message: res.status === 401 || res.status === 403 ? "The provider rejected this key." : `Provider error (${res.status}).`, models: [] };
+    const json = await res.json();
+    const ids = provider === "gemini"
+      ? (json.models || []).filter((m) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m) => String(m.name).replace(/^models\//, ""))
+      : (json.data || []).map((m) => m.id);
+    return { ok: true, models: ids.filter((id) => !NON_CHAT.test(id)).sort() };
+  } catch {
+    return { ok: false, message: "Couldn't reach the provider.", models: [] };
+  }
+}

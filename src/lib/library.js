@@ -79,7 +79,11 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
   }
 
   // Structured text (newline-separated blocks) is chunked along its lines; flat text falls back to words.
-  const pieces = text.includes("\n") ? chunkStructured(text) : chunkText(text);
+  // A feed's natural unit is one item (a couple of lines), so each item becomes its own snippet and
+  // a citation points at exactly one headline, not at a block of ten.
+  const pieces = text.includes("\n")
+    ? chunkStructured(text, pageKind === "feed" ? { maxChars: 240, overlapLines: 0, groupItems: true } : {})
+    : chunkText(text);
   if (pieces.length === 0) {
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
