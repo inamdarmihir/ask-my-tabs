@@ -271,6 +271,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             filter: message.filter,
             tabTitles: message.tabTitles,
             sourceCount: message.sourceCount ?? null,
+            history: message.history || [],
+            capable: cfg.llmProvider !== "webllm",
             embed: embedQuery, // query-time embedding uses the bge instruction prefix
             chatJSON: llmFunctions.chatJSON,
             chatStream: llmFunctions.chatStream,

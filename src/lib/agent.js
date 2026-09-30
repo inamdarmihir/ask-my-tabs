@@ -12,6 +12,7 @@
 
 import { sparseVector } from "./sparse.js";
 import { startTimer } from "./timing.js";
+import { selectReadingChunks, answerSystemPrompt, historyMessages } from "./reading.js";
 
 const TOP_K_PER_QUERY = 5;
 const FINAL_TOP_K = 8;
@@ -88,6 +89,41 @@ export function stripThinking(text) {
 const OVERVIEW = /\b(about (the|this|these|my) (page|pages|tab|tabs|site|article)|summari[sz]e|summary|overview|what (is|are) (this|these)|what do you see|tl;?dr|key (points|takeaways)|main (points|ideas))\b/i;
 export function isOverviewQuestion(question) {
   return OVERVIEW.test(question || "");
+}
+
+export function classifyIntent(question) {
+  if (isOverviewQuestion(question)) return "summarize";
+  if (needsPlanning(question)) return "compare";
+  return "lookup";
+}
+
+// Planner for capable (hosted) models: one call that classifies the question, rewrites a follow-up
+// into a standalone question using the conversation so far, and proposes search queries.
+async function planWithLLM(chatJSON, question, tabTitles, history) {
+  const raw = await chatJSON([
+    {
+      role: "system",
+      content:
+        "You plan how to answer a question over the user's saved web pages. Output JSON only: " +
+        '{"intent":"summarize|compare|lookup","question":"...","queries":["..."]}. ' +
+        'intent "summarize" = wants an overview, summary, best/top items or key points of a page; ' +
+        '"compare" = weighs several things; "lookup" = a specific fact or explanation. ' +
+        '"question" = the user\'s question rewritten to be fully standalone (resolve "it", "that", ' +
+        "\"and then?\" using the conversation), same language. " +
+        '"queries" = 1 to 3 short search queries (one per thing compared).',
+    },
+    {
+      role: "user",
+      content:
+        (history?.length ? `Conversation so far:\n${history.slice(-3).map((h) => `Q: ${h.q}\nA: ${h.a.slice(0, 300)}`).join("\n")}\n\n` : "") +
+        `Sources:\n${tabTitles.map((t) => `- ${t}`).join("\n")}\n\nQuestion: ${question}`,
+    },
+  ]);
+  const parsed = safeParseJSON(raw, {});
+  const intent = ["summarize", "compare", "lookup"].includes(parsed.intent) ? parsed.intent : classifyIntent(question);
+  const standalone = typeof parsed.question === "string" && parsed.question.trim() ? parsed.question.trim() : question;
+  const queries = Array.isArray(parsed.queries) && parsed.queries.length ? parsed.queries.slice(0, 3) : [standalone];
+  return { intent, question: standalone, queries };
 }
 
 async function planQueries(chatJSON, question, tabTitles) {
@@ -169,45 +205,58 @@ export async function retrieve({ client, collection, mode, filter, query, embed,
 
 export async function answerQuestion(
   question,
-  { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed, chatJSON, chatStream, freshnessBoost = null },
+  { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed, chatJSON, chatStream, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 24000 : 5000 },
   onStatus,
   onToken,
 ) {
   const timer = startTimer();
 
-  // With a single source in scope there is nothing to split a comparison across, and a simple
-  // question needs no decomposition, so the planning LLM call is skipped (one fewer round trip)
-  // and the question itself is the search query.
-  let queries;
-  if (sourceCount === 1 || !needsPlanning(question)) {
-    queries = [question];
+  // 1. Understand. Capable models get one planning call (intent, standalone rewrite of follow-ups,
+  //    queries). The on-device model skips it (seconds per call) and uses cheap heuristics.
+  let intent = classifyIntent(question);
+  let q = question;
+  let queries = [question];
+  if (capable) {
+    onStatus("Understanding your question...");
+    const plan = await timer.time("plan", () => planWithLLM(chatJSON, question, tabTitles || [], history));
+    ({ intent, question: q, queries } = plan);
   } else {
-    onStatus("Planning search queries...");
-    queries = await timer.time("plan", () => planQueries(chatJSON, question, tabTitles));
+    // A terse follow-up ("and then?") can't be searched alone; borrow the previous question.
+    if (history.length && q.split(/\s+/).length < 6) queries = [`${history[history.length - 1].q} ${q}`];
+    if (intent === "compare" && sourceCount !== 1) {
+      onStatus("Planning search queries...");
+      queries = await timer.time("plan", () => planQueries(chatJSON, question, tabTitles || []));
+    }
   }
 
-  const overview = isOverviewQuestion(question);
-  const perQueryK = overview ? OVERVIEW_TOP_K : TOP_K_PER_QUERY;
-  if (overview && tabTitles?.length) {
-    queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+  // 2. Gather. Summaries read the page(s) in order; everything else searches.
+  let topHits = [];
+  let mode_ = "search";
+  const canRead = intent === "summarize" && sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
+  if (canRead) {
+    onStatus("Reading your pages...");
+    const points = await timer.time("read", () => client.scrollAll(collection, { filter, withPayload: true }));
+    topHits = selectReadingChunks(points, readBudgetChars);
+    if (topHits.length) {
+      mode_ = "read";
+      onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+    }
+  }
+  if (mode_ === "search") {
+    const overview = intent === "summarize";
+    const perQueryK = overview ? OVERVIEW_TOP_K : TOP_K_PER_QUERY;
+    if (overview && tabTitles?.length) queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+    onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
+    const perQuery = await timer.time("retrieve", () =>
+      Promise.all(queries.map((qq) => retrieve({ client, collection, mode, filter, query: qq, embed, sourceCount, freshnessBoost, topK: perQueryK }))),
+    );
+    // No LLM sufficiency judgment: slow (a round trip per hop) and unreliable on small models.
+    // The prompt says what is missing; an empty or undiscriminating result set abstains below.
+    topHits = dedupeHits(perQuery.flat()).slice(0, overview ? OVERVIEW_TOP_K : FINAL_TOP_K);
+    if (topHits.length === 0 || !hasDiscriminativeSignal(topHits)) topHits = [];
   }
 
-  onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
-  // Queries are independent, so run them concurrently.
-  const perQuery = await timer.time("retrieve", () =>
-    Promise.all(
-      queries.map((q) => retrieve({ client, collection, mode, filter, query: q, embed, sourceCount, freshnessBoost, topK: perQueryK })),
-    ),
-  );
-  const allHits = dedupeHits(perQuery.flat());
-
-  // No LLM sufficiency judgment: a 0.6B model's "is this enough?" verdict was slow (another full
-  // round trip per hop) and unreliable. Retrieval already returns the best evidence available;
-  // the answer prompt is told to say what is missing, and an empty/undiscriminating result set
-  // abstains below. Method-agnostic, see hasDiscriminativeSignal.
-  const topHits = allHits.slice(0, overview ? OVERVIEW_TOP_K : FINAL_TOP_K);
-
-  if (topHits.length === 0 || !hasDiscriminativeSignal(topHits)) {
+  if (topHits.length === 0) {
     const msg =
       "I couldn't find anything in scope that relates to this question. Try adding a relevant " +
       "source first, or widening the working set/library filters.";
@@ -215,27 +264,14 @@ export async function answerQuestion(
     return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 }, timings: timer.summary() };
   }
 
+  // 3. Write.
   onStatus("Writing an answer...");
-  const contextBlock = topHits
-    .map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`)
-    .join("\n\n");
-
+  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}) ${h.text}`).join("\n\n");
   const rawAnswer = await timer.time("generate", () => chatStream(
     [
-      {
-        role: "system",
-        content:
-          "Answer the user's question using ONLY the numbered snippets provided. The snippets are the " +
-          'content of the page(s) the user is asking about, so "the page" or "this page" means them: ' +
-          "describe what they contain in your own words, briefly. Never copy snippets line by line and " +
-          "never repeat yourself. Numbers that appear INSIDE the snippet text (list rankings, item " +
-          "numbers, point counts) are page content, not citations. Cite only with the snippet's own " +
-          "label, [1] to [" + topHits.length + "]. Cite snippets " +
-          'inline like [1] or [2] next to the claims they support. If the snippets don\'t fully ' +
-          "answer the question, say what's missing instead of guessing. " +
-          UNTRUSTED_CONTENT_NOTICE,
-      },
-      { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${question}` },
+      { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE) },
+      ...historyMessages(history),
+      { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${q}` },
     ],
     (delta, full) => onToken(delta, stripThinking(full)),
   ));
@@ -259,6 +295,6 @@ export async function answerQuestion(
     })),
     abstained: false,
     citationValidation,
-    timings: { ...timer.summary(), queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size },
+    timings: { ...timer.summary(), intent, mode: mode_, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size },
   };
 }

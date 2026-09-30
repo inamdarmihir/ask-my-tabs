@@ -97,3 +97,37 @@ test("overview questions also search by source titles", async () => {
   await answerQuestion("what do you see?", { ...args, sourceCount: 1, tabTitles: ["Hacker News"] }, noop, noop);
   assert.equal(calls.queries, 2);
 });
+
+function pt(sourceKey, chunkIndex, text, indexedAt = 1, contentHash = "h") {
+  return { id: `${sourceKey}${chunkIndex}`, payload: { sourceKey, chunkIndex, text, indexedAt, contentHash, title: sourceKey, canonicalUrl: `https://x/${sourceKey}`, domain: "x" } };
+}
+
+test("summaries read the page in order instead of searching", async () => {
+  const { calls, args } = harness();
+  const points = [pt("a", 2, "third"), pt("a", 0, "first"), pt("a", 1, "second")];
+  args.client.scrollAll = async () => points;
+  let seenUser = "";
+  args.chatStream = async (m, onToken) => { seenUser = m[m.length - 1].content; onToken("ok [1]", "ok [1]"); return "ok [1]"; };
+  const res = await answerQuestion("summarize the best news", { ...args, sourceCount: 1, tabTitles: ["A"] }, noop, noop);
+  assert.equal(calls.queries, 0, "no similarity search in read mode");
+  assert.equal(res.timings.mode, "read");
+  assert.ok(seenUser.indexOf("first") < seenUser.indexOf("second") && seenUser.indexOf("second") < seenUser.indexOf("third"));
+});
+
+test("read mode keeps only the latest snapshot and respects the budget", async () => {
+  const { selectReadingChunks } = await import("../../src/lib/reading.js");
+  const points = [pt("a", 0, "old", 1, "h1"), pt("a", 0, "new0", 2, "h2"), pt("a", 1, "x".repeat(50), 2, "h2"), pt("a", 2, "y".repeat(50), 2, "h2")];
+  const hits = selectReadingChunks(points, 60);
+  assert.deepEqual(hits.map((h) => h.text.slice(0, 4)), ["new0", "xxxx"]);
+});
+
+test("capable models plan once, rewrite follow-ups, and receive history", async () => {
+  const { calls, args } = harness();
+  let messages;
+  args.chatJSON = async (m) => { calls.chatJSON.push("plan"); return JSON.stringify({ intent: "lookup", question: "What is beta's price?", queries: ["beta price"] }); };
+  args.chatStream = async (m, onToken) => { messages = m; onToken("A [1]", "A [1]"); return "A [1]"; };
+  await answerQuestion("and its price?", { ...args, sourceCount: 2, capable: true, history: [{ q: "what is beta", a: "Beta is a thing." }] }, noop, noop);
+  assert.equal(calls.chatJSON.length, 1);
+  assert.ok(messages.some((m) => m.role === "assistant" && m.content.includes("Beta is a thing")));
+  assert.ok(messages[messages.length - 1].content.includes("What is beta's price?"));
+});

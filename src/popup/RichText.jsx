@@ -40,6 +40,12 @@ export function RichText({ text, citationCount = 0, onCite = () => {} }) {
   };
   (text || "").split("\n").forEach((raw, idx) => {
     const line = raw.trimEnd();
+    const heading = line.match(/^#{1,4}\s+(.*)$/);
+    if (heading) {
+      flush();
+      blocks.push({ h: heading[1], key: `h${idx}` });
+      return;
+    }
     const bullet = line.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)$/);
     if (bullet) {
       const ordered = !!bullet[1];
@@ -60,7 +66,9 @@ export function RichText({ text, citationCount = 0, onCite = () => {} }) {
   return (
     <div className="rich">
       {blocks.map((b) =>
-        b.p !== undefined ? (
+        b.h !== undefined ? (
+          <h3 key={b.key}>{inline(b.h, citationCount, onCite, b.key)}</h3>
+        ) : b.p !== undefined ? (
           <p key={b.key}>{inline(b.p, citationCount, onCite, b.key)}</p>
         ) : b.ordered ? (
           <ol key={b.key}>{b.items.map((t, i) => <li key={i}>{inline(t, citationCount, onCite, `${b.key}-${i}`)}</li>)}</ol>

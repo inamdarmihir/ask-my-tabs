@@ -71317,6 +71317,64 @@ async function listLibrarySources(client, collection, { domain, indexedAfter, in
   return Array.from(bySource.values()).sort((a, b) => b.indexedAt - a.indexedAt);
 }
 
+// src/lib/reading.js
+function latestSnapshot(points) {
+  const newest = /* @__PURE__ */ new Map();
+  for (const p of points) {
+    const cur = newest.get(p.payload.sourceKey);
+    if (!cur || p.payload.indexedAt > cur.indexedAt) newest.set(p.payload.sourceKey, { indexedAt: p.payload.indexedAt, contentHash: p.payload.contentHash });
+  }
+  return points.filter((p) => newest.get(p.payload.sourceKey).contentHash === p.payload.contentHash);
+}
+function selectReadingChunks(points, budgetChars) {
+  const bySource = /* @__PURE__ */ new Map();
+  for (const p of latestSnapshot(points)) {
+    if (!bySource.has(p.payload.sourceKey)) bySource.set(p.payload.sourceKey, []);
+    bySource.get(p.payload.sourceKey).push(p);
+  }
+  if (bySource.size === 0) return [];
+  const share = Math.floor(budgetChars / bySource.size);
+  const hits = [];
+  for (const chunks of bySource.values()) {
+    chunks.sort((a, b) => a.payload.chunkIndex - b.payload.chunkIndex);
+    let used = 0;
+    for (const c of chunks) {
+      const len = c.payload.text.length;
+      if (used > 0 && used + len > share) break;
+      used += len;
+      hits.push({
+        id: c.id,
+        score: 1,
+        tabTitle: c.payload.title,
+        tabUrl: c.payload.canonicalUrl,
+        text: c.payload.text,
+        sourceKey: c.payload.sourceKey,
+        domain: c.payload.domain,
+        indexedAt: c.payload.indexedAt,
+        contentHash: c.payload.contentHash,
+        chunkIndex: c.payload.chunkIndex,
+        payload: c.payload
+      });
+    }
+  }
+  return hits;
+}
+var COMMON = "Ground every claim in the numbered snippets and cite them inline like [1] or [2]. Cite only with the snippet's own label; numbers INSIDE snippet text (rankings, item numbers, points, comment counts) are page content, not citations. Write in your own words: never paste or list snippet text line by line, never list bare URLs, never repeat yourself. If the snippets don't contain what was asked, say exactly what is missing instead of guessing. ";
+var BY_INTENT = {
+  summarize: `You are a sharp research assistant. The snippets are what the user is looking at ("the page", "this page" mean them). Synthesize, do not enumerate. Format: one plain sentence saying what the page is, then 3-6 bullets grouped by theme. Each bullet: a bold 2-5 word label, then what it says and why it matters, with citations. If the page is a feed or list of links (headlines, points, comments), decide which items best fit the user's request, rank them, and explain each in a sentence; skip the rest. Finish with a one-line takeaway. `,
+  compare: "You are a careful analyst comparing sources. Give a one-sentence verdict first, then one short bullet group per thing compared, then a line on the key difference. ",
+  lookup: "You are a precise research assistant. Answer directly in the first sentence, then add only the supporting detail that matters, as short paragraphs or bullets. "
+};
+function answerSystemPrompt(intent, count, untrustedNotice) {
+  return `${BY_INTENT[intent] || BY_INTENT.lookup}${COMMON}Valid citations are [1] to [${count}]. ${untrustedNotice}`;
+}
+function historyMessages(history, maxTurns = 3, maxAnswerChars = 600) {
+  return (history || []).slice(-maxTurns).flatMap((h) => [
+    { role: "user", content: h.q },
+    { role: "assistant", content: h.a.length > maxAnswerChars ? `${h.a.slice(0, maxAnswerChars)}...` : h.a }
+  ]);
+}
+
 // src/lib/agent.js
 var TOP_K_PER_QUERY = 5;
 var FINAL_TOP_K = 8;
@@ -71364,6 +71422,35 @@ function stripThinking(text) {
 var OVERVIEW = /\b(about (the|this|these|my) (page|pages|tab|tabs|site|article)|summari[sz]e|summary|overview|what (is|are) (this|these)|what do you see|tl;?dr|key (points|takeaways)|main (points|ideas))\b/i;
 function isOverviewQuestion(question) {
   return OVERVIEW.test(question || "");
+}
+function classifyIntent(question) {
+  if (isOverviewQuestion(question)) return "summarize";
+  if (needsPlanning(question)) return "compare";
+  return "lookup";
+}
+async function planWithLLM(chatJSON2, question, tabTitles, history) {
+  const raw = await chatJSON2([
+    {
+      role: "system",
+      content: `You plan how to answer a question over the user's saved web pages. Output JSON only: {"intent":"summarize|compare|lookup","question":"...","queries":["..."]}. intent "summarize" = wants an overview, summary, best/top items or key points of a page; "compare" = weighs several things; "lookup" = a specific fact or explanation. "question" = the user's question rewritten to be fully standalone (resolve "it", "that", "and then?" using the conversation), same language. "queries" = 1 to 3 short search queries (one per thing compared).`
+    },
+    {
+      role: "user",
+      content: (history?.length ? `Conversation so far:
+${history.slice(-3).map((h) => `Q: ${h.q}
+A: ${h.a.slice(0, 300)}`).join("\n")}
+
+` : "") + `Sources:
+${tabTitles.map((t) => `- ${t}`).join("\n")}
+
+Question: ${question}`
+    }
+  ]);
+  const parsed = safeParseJSON(raw, {});
+  const intent = ["summarize", "compare", "lookup"].includes(parsed.intent) ? parsed.intent : classifyIntent(question);
+  const standalone = typeof parsed.question === "string" && parsed.question.trim() ? parsed.question.trim() : question;
+  const queries = Array.isArray(parsed.queries) && parsed.queries.length ? parsed.queries.slice(0, 3) : [standalone];
+  return { intent, question: standalone, queries };
 }
 async function planQueries(chatJSON2, question, tabTitles) {
   const raw = await chatJSON2([
@@ -71429,46 +71516,61 @@ async function retrieve({ client, collection, mode, filter, query, embed: embed2
   }
   return hits;
 }
-async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null }, onStatus, onToken) {
+async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 24e3 : 5e3 }, onStatus, onToken) {
   const timer = startTimer();
-  let queries;
-  if (sourceCount === 1 || !needsPlanning(question)) {
-    queries = [question];
+  let intent = classifyIntent(question);
+  let q = question;
+  let queries = [question];
+  if (capable) {
+    onStatus("Understanding your question...");
+    const plan = await timer.time("plan", () => planWithLLM(chatJSON2, question, tabTitles || [], history));
+    ({ intent, question: q, queries } = plan);
   } else {
-    onStatus("Planning search queries...");
-    queries = await timer.time("plan", () => planQueries(chatJSON2, question, tabTitles));
+    if (history.length && q.split(/\s+/).length < 6) queries = [`${history[history.length - 1].q} ${q}`];
+    if (intent === "compare" && sourceCount !== 1) {
+      onStatus("Planning search queries...");
+      queries = await timer.time("plan", () => planQueries(chatJSON2, question, tabTitles || []));
+    }
   }
-  const overview = isOverviewQuestion(question);
-  const perQueryK = overview ? OVERVIEW_TOP_K : TOP_K_PER_QUERY;
-  if (overview && tabTitles?.length) {
-    queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+  let topHits = [];
+  let mode_ = "search";
+  const canRead = intent === "summarize" && sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
+  if (canRead) {
+    onStatus("Reading your pages...");
+    const points = await timer.time("read", () => client.scrollAll(collection, { filter, withPayload: true }));
+    topHits = selectReadingChunks(points, readBudgetChars);
+    if (topHits.length) {
+      mode_ = "read";
+      onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+    }
   }
-  onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
-  const perQuery = await timer.time(
-    "retrieve",
-    () => Promise.all(
-      queries.map((q) => retrieve({ client, collection, mode, filter, query: q, embed: embed2, sourceCount, freshnessBoost, topK: perQueryK }))
-    )
-  );
-  const allHits = dedupeHits(perQuery.flat());
-  const topHits = allHits.slice(0, overview ? OVERVIEW_TOP_K : FINAL_TOP_K);
-  if (topHits.length === 0 || !hasDiscriminativeSignal(topHits)) {
+  if (mode_ === "search") {
+    const overview = intent === "summarize";
+    const perQueryK = overview ? OVERVIEW_TOP_K : TOP_K_PER_QUERY;
+    if (overview && tabTitles?.length) queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+    onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
+    const perQuery = await timer.time(
+      "retrieve",
+      () => Promise.all(queries.map((qq) => retrieve({ client, collection, mode, filter, query: qq, embed: embed2, sourceCount, freshnessBoost, topK: perQueryK })))
+    );
+    topHits = dedupeHits(perQuery.flat()).slice(0, overview ? OVERVIEW_TOP_K : FINAL_TOP_K);
+    if (topHits.length === 0 || !hasDiscriminativeSignal(topHits)) topHits = [];
+  }
+  if (topHits.length === 0) {
     const msg = "I couldn't find anything in scope that relates to this question. Try adding a relevant source first, or widening the working set/library filters.";
     onToken(msg, msg);
     return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 }, timings: timer.summary() };
   }
   onStatus("Writing an answer...");
-  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`).join("\n\n");
+  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}) ${h.text}`).join("\n\n");
   const rawAnswer = await timer.time("generate", () => chatStream2(
     [
-      {
-        role: "system",
-        content: `Answer the user's question using ONLY the numbered snippets provided. The snippets are the content of the page(s) the user is asking about, so "the page" or "this page" means them: describe what they contain in your own words, briefly. Never copy snippets line by line and never repeat yourself. Numbers that appear INSIDE the snippet text (list rankings, item numbers, point counts) are page content, not citations. Cite only with the snippet's own label, [1] to [` + topHits.length + "]. Cite snippets inline like [1] or [2] next to the claims they support. If the snippets don't fully answer the question, say what's missing instead of guessing. " + UNTRUSTED_CONTENT_NOTICE
-      },
+      { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE) },
+      ...historyMessages(history),
       { role: "user", content: `Snippets:
 ${contextBlock}
 
-Question: ${question}` }
+Question: ${q}` }
     ],
     (delta, full) => onToken(delta, stripThinking(full))
   ));
@@ -71490,7 +71592,7 @@ Question: ${question}` }
     })),
     abstained: false,
     citationValidation,
-    timings: { ...timer.summary(), queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size }
+    timings: { ...timer.summary(), intent, mode: mode_, queries: queries.length, snippets: topHits.length, sources: new Set(topHits.map((h) => h.sourceKey)).size }
   };
 }
 
@@ -71683,6 +71785,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             filter: message.filter,
             tabTitles: message.tabTitles,
             sourceCount: message.sourceCount ?? null,
+            history: message.history || [],
+            capable: cfg.llmProvider !== "webllm",
             embed: embedQuery,
             // query-time embedding uses the bge instruction prefix
             chatJSON: llmFunctions.chatJSON,

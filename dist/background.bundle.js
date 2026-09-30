@@ -174,8 +174,10 @@ function eventToPatch(event, message) {
   switch (event.type) {
     case "MODEL_PROGRESS":
       return { statusText: typeof event.detail === "string" ? event.detail : `Loading ${event.stage}...` };
-    case "AGENT_STATUS":
-      return { statusText: event.status };
+    case "AGENT_STATUS": {
+      const steps = message?.steps || [];
+      return { statusText: event.status, steps: steps[steps.length - 1] === event.status ? steps : [...steps, event.status] };
+    }
     case "ANSWER_TOKEN":
       return { content: event.full ?? `${message?.content || ""}${event.delta}`, statusText: "Writing an answer..." };
     case "ANSWER_DONE": {
@@ -394,10 +396,15 @@ function handleAnswerEvent(event) {
 async function sendQuestion(message) {
   if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
   let ids;
+  let history = [];
   const cfg = await getConfig();
   const provider = ALL_API_PROVIDERS[cfg.llmProvider];
   const model = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : "On-device (Qwen3-0.6B)";
   await mutateThreads((list) => {
+    const prior = list.find((t) => t.id === message.threadId);
+    history = (prior?.messages || []).flatMap(
+      (m, i, all) => m.role === "assistant" && m.status === "done" && m.content && !m.abstained && all[i - 1]?.role === "user" ? [{ q: all[i - 1].content, a: m.content }] : []
+    );
     const turn = startTurn(list, {
       threadId: message.threadId,
       question: message.question,
@@ -421,7 +428,8 @@ async function sendQuestion(message) {
       question: message.question,
       filter: message.filter,
       tabTitles: message.tabTitles,
-      sourceCount: message.sourceCount
+      sourceCount: message.sourceCount,
+      history
     });
     if (!ack?.ok) throw new Error("The answer engine didn't start.");
   } catch (err) {

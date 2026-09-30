@@ -14,3 +14,4 @@ export const ChevronIcon = () => <Icon size={14}><path d="M9 6l6 6-6 6" /></Icon
 export const CloseIcon = () => <Icon size={14}><path d="M18 6L6 18M6 6l12 12" /></Icon>;
 export const SparkIcon = () => <Icon size={20}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" /></Icon>;
 export const CheckIcon = () => <Icon size={14}><path d="M20 6L9 17l-5-5" /></Icon>;
+export const RetryIcon = () => <Icon><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5" /></Icon>;

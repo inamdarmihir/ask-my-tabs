@@ -59,8 +59,11 @@ export function eventToPatch(event, message) {
   switch (event.type) {
     case "MODEL_PROGRESS":
       return { statusText: typeof event.detail === "string" ? event.detail : `Loading ${event.stage}...` };
-    case "AGENT_STATUS":
-      return { statusText: event.status };
+    case "AGENT_STATUS": {
+      // Keep the trail of steps so the UI can show how the answer was produced.
+      const steps = message?.steps || [];
+      return { statusText: event.status, steps: steps[steps.length - 1] === event.status ? steps : [...steps, event.status] };
+    }
     case "ANSWER_TOKEN":
       return { content: event.full ?? `${message?.content || ""}${event.delta}`, statusText: "Writing an answer..." };
     case "ANSWER_DONE": {

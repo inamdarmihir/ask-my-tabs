@@ -2,77 +2,124 @@ import React, { useEffect, useRef, useState } from "react";
 import { citationStatus } from "../lib/freshness.js";
 import { STALE_PENDING_MS, INTERRUPTED_MESSAGE } from "../lib/threads.js";
 import { RichText } from "./RichText.jsx";
-import { CheckIcon, ChevronIcon, CopyIcon, SendIcon, SparkIcon } from "./icons.jsx";
+import { CheckIcon, ChevronIcon, CopyIcon, RetryIcon, SendIcon, SparkIcon } from "./icons.jsx";
 import { formatMs, send, useNow } from "./hooks.js";
 
-const SUGGESTIONS = ["Summarize these pages", "What are the key takeaways?", "Where do these pages disagree?"];
+const SUGGESTIONS = ["Summarize these pages in a few bullets", "What are the most important takeaways?", "What should I look at first, and why?"];
 
 function StatusChip({ status }) {
   return <span className={`badge badge-${status}`}>{status === "confirmed-current" ? "current" : status}</span>;
 }
 
-function Citation({ c, highlighted, openTab }) {
+function Pending({ message, now }) {
+  const started = message.startedAt ?? message.createdAt;
+  const secs = Math.max(0, Math.round((now - started) / 1000));
+  const done = (message.steps || []).slice(0, -1);
+  return (
+    <div className="pending" role="status">
+      {done.length > 0 && (
+        <ul className="steps">
+          {done.map((st, i) => <li key={i}><CheckIcon /> {st}</li>)}
+        </ul>
+      )}
+      <div className="pending-now">
+        <span className="spinner" />
+        <span>{message.statusText || "Working..."}</span>
+        <span className="elapsed">{secs}s</span>
+      </div>
+    </div>
+  );
+}
+
+const STAGE_LABELS = { plan: "Understanding", read: "Reading pages", retrieve: "Searching", generate: "Writing" };
+
+function Trace({ message }) {
+  const [open, setOpen] = useState(false);
+  const t = message.timings;
+  const steps = (message.steps || []).filter((x) => x !== "Writing an answer...");
+  if (!steps.length && !t) return null;
+  return (
+    <div className="trace">
+      <button className={`sources-toggle ${open ? "open" : ""}`} onClick={() => setOpen((v) => !v)}><ChevronIcon /> How this was answered</button>
+      {open && (
+        <div className="trace-body">
+          <ul className="steps">{steps.map((st, i) => <li key={i}><CheckIcon /> {st}</li>)}<li><CheckIcon /> Wrote the answer</li></ul>
+          {t?.stages && (
+            <div className="stages">
+              {Object.entries(t.stages).map(([k, v]) => <span key={k} className="stage">{STAGE_LABELS[k] || k} {formatMs(v)}</span>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One card per page (not per snippet), listing which [n] came from it.
+function SourceGroup({ group, highlight, openTab }) {
   const [expanded, setExpanded] = useState(false);
-  const [freshness, setFreshness] = useState(null); // null | "checking" | "confirmed-current" | "superseded" | {error}
+  const [freshness, setFreshness] = useState(null);
   const ref = useRef(null);
+  const hl = group.items.some((c) => c.index === highlight);
   useEffect(() => {
-    if (highlighted) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [highlighted]);
+    if (hl) {
+      setExpanded(true);
+      ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [hl, highlight]);
+  const first = group.items[0];
 
   const jump = async (e) => {
-    if (!openTab) return; // no open tab: let the link open the stored URL
+    if (!openTab) return;
     e.preventDefault();
     try {
       const tab = await chrome.tabs.update(openTab.tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
     } catch {
-      chrome.tabs.create({ url: c.tabUrl });
+      chrome.tabs.create({ url: first.tabUrl });
     }
   };
-
   const check = async () => {
     setFreshness("checking");
-    const res = await send({ type: "CHECK_FRESHNESS", tabId: openTab.tabId, canonicalUrl: c.tabUrl, storedContentHash: c.contentHash }).catch(() => null);
+    const res = await send({ type: "CHECK_FRESHNESS", tabId: openTab.tabId, canonicalUrl: first.tabUrl, storedContentHash: first.contentHash }).catch(() => null);
     if (res?.ok && res.checked) setFreshness(res.matches ? "confirmed-current" : "superseded");
     else setFreshness({ error: res?.reason || res?.error || "Could not check." });
   };
+  const status = typeof freshness === "string" && freshness !== "checking" ? freshness : citationStatus({ hasNewerSnapshot: false, liveCheck: null });
 
   return (
-    <li ref={ref} className={`source ${highlighted ? "source-hl" : ""}`}>
-      <span className="source-n">{c.index}</span>
+    <li ref={ref} className={`source ${hl ? "source-hl" : ""}`}>
       <div className="source-body">
-        <a href={c.tabUrl} target="_blank" rel="noreferrer" onClick={jump} className="source-title">{c.tabTitle}</a>
-        <div className="source-meta">
-          {c.domain} · indexed {c.indexedAt ? new Date(c.indexedAt).toLocaleDateString() : "unknown"}
-          {typeof freshness === "string" && freshness !== "checking" ? <StatusChip status={freshness} /> : <StatusChip status={citationStatus({ hasNewerSnapshot: false, liveCheck: null })} />}
-          {openTab && freshness === null && <button className="link" onClick={check}>Check freshness</button>}
-          {freshness === "checking" && <span> checking...</span>}
-          {freshness?.error && <span title={freshness.error}> couldn't check</span>}
+        <div className="source-top">
+          <a href={first.tabUrl} target="_blank" rel="noreferrer" onClick={jump} className="source-title">{first.tabTitle}</a>
         </div>
-        {c.text && (
-          <button className="link excerpt-toggle" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? "Hide excerpt" : "Show excerpt"}
-          </button>
-        )}
-        {expanded && <blockquote>{c.text}</blockquote>}
+        <div className="source-meta">
+          <span>{group.domain}</span>
+          <span className="nums">{group.items.map((c) => <span key={c.index} className="cite static">{c.index}</span>)}</span>
+          <StatusChip status={status} />
+          {openTab && freshness === null && <button className="link" onClick={check}>Check freshness</button>}
+          {freshness === "checking" && <span>checking...</span>}
+          {freshness?.error && <span title={freshness.error}>couldn't check</span>}
+          <button className="link" onClick={() => setExpanded((v) => !v)}>{expanded ? "Hide excerpts" : `Excerpts (${group.items.length})`}</button>
+        </div>
+        {expanded && group.items.map((c) => (
+          <blockquote key={c.index} className={c.index === highlight ? "hl" : ""}><b>[{c.index}]</b> {c.text}</blockquote>
+        ))}
       </div>
     </li>
   );
 }
 
-function Pending({ message, now }) {
-  const started = message.startedAt ?? message.createdAt;
-  const secs = Math.max(0, Math.round((now - started) / 1000));
-  return (
-    <div className="pending" role="status">
-      <span className="spinner" />
-      <span>{message.statusText || "Working..."}</span>
-      <span className="elapsed">{secs}s</span>
-    </div>
-  );
+function groupBySource(citations) {
+  const map = new Map();
+  for (const c of citations) {
+    if (!map.has(c.sourceKey)) map.set(c.sourceKey, { sourceKey: c.sourceKey, domain: c.domain, items: [] });
+    map.get(c.sourceKey).items.push(c);
+  }
+  return [...map.values()];
 }
 
-function AssistantMessage({ message, workingSet, now }) {
+function AssistantMessage({ message, workingSet, now, onRegenerate }) {
   const [showSources, setShowSources] = useState(false);
   const [highlight, setHighlight] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -111,21 +158,25 @@ function AssistantMessage({ message, workingSet, now }) {
             {message.model ? `${message.model} · ` : ""}
             {t ? `${formatMs(t.totalMs)}${t.snippets ? ` · ${t.snippets} snippets · ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}` : ""}
           </span>
-          <button className="icon-btn small" onClick={copy} title="Copy answer">{copied ? <CheckIcon /> : <CopyIcon />}</button>
+          <span className="actions">
+            {onRegenerate && <button className="icon-btn small" onClick={onRegenerate} title="Ask again" aria-label="Regenerate"><RetryIcon /></button>}
+            <button className="icon-btn small" onClick={copy} title="Copy answer" aria-label="Copy answer">{copied ? <CheckIcon /> : <CopyIcon />}</button>
+          </span>
         </div>
       )}
+      {status === "done" && <Trace message={message} />}
       {citations.length > 0 && (
         <div className="sources">
           <button className={`sources-toggle ${showSources ? "open" : ""}`} onClick={() => setShowSources((v) => !v)}>
-            <ChevronIcon /> Sources ({citations.length})
+            <ChevronIcon /> {groupBySource(citations).length} page{groupBySource(citations).length === 1 ? "" : "s"} used
           </button>
           {showSources && (
             <>
-              <ol className="source-list">
-                {[...citations].sort((a, b) => Number(cited.has(b.index)) - Number(cited.has(a.index)) || a.index - b.index).map((c) => (
-                  <Citation key={c.index} c={c} highlighted={highlight === c.index} openTab={workingSet.find((w) => w.sourceKey === c.sourceKey)} />
+              <ul className="source-list">
+                {groupBySource(citations).map((g) => (
+                  <SourceGroup key={g.sourceKey} group={g} highlight={highlight} openTab={workingSet.find((w) => w.sourceKey === g.sourceKey)} />
                 ))}
-              </ol>
+              </ul>
               <p className="snapshot-note">Sources point to stored snapshots, which may differ from the live page.</p>
             </>
           )}
@@ -177,6 +228,12 @@ export function Chat({ thread, workingSet, busy, scope, setScope, canAsk, blocke
                 : blockedReason}
             </p>
             {!canAsk && <button className="btn btn-primary" onClick={onGoPages}>Add pages</button>}
+            {canAsk && scope === "working-set" && workingSet.length > 0 && (
+              <div className="page-chips">
+                {workingSet.slice(0, 4).map((w) => <span key={w.sourceKey} className="page-chip" title={w.canonicalUrl}>{w.title || w.domain}</span>)}
+                {workingSet.length > 4 && <span className="page-chip">+{workingSet.length - 4} more</span>}
+              </div>
+            )}
             {canAsk && (
               <div className="suggestions">
                 {SUGGESTIONS.map((s) => <button key={s} className="suggestion" onClick={() => submit(s)}>{s}</button>)}
@@ -184,11 +241,11 @@ export function Chat({ thread, workingSet, busy, scope, setScope, canAsk, blocke
             )}
           </div>
         ) : (
-          messages.map((m) =>
+          messages.map((m, idx) =>
             m.role === "user" ? (
               <div key={m.id} className="msg msg-user"><div className="bubble">{m.content}</div></div>
             ) : (
-              <AssistantMessage key={m.id} message={m} workingSet={workingSet} now={now} />
+              <AssistantMessage key={m.id} message={m} workingSet={workingSet} now={now} onRegenerate={idx === messages.length - 1 && !pending && canAsk ? () => onSend(messages[idx - 1].content) : null} />
             ),
           )
         )}

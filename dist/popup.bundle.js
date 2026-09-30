@@ -14651,6 +14651,12 @@ function RichText({ text, citationCount = 0, onCite = () => {
   };
   (text || "").split("\n").forEach((raw, idx) => {
     const line = raw.trimEnd();
+    const heading = line.match(/^#{1,4}\s+(.*)$/);
+    if (heading) {
+      flush();
+      blocks.push({ h: heading[1], key: `h${idx}` });
+      return;
+    }
     const bullet = line.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)$/);
     if (bullet) {
       const ordered = !!bullet[1];
@@ -14668,7 +14674,7 @@ function RichText({ text, citationCount = 0, onCite = () => {
   });
   flush();
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "rich", children: blocks.map(
-    (b) => b.p !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: inline(b.p, citationCount, onCite, b.key) }, b.key) : b.ordered ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ol", { children: b.items.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: inline(t, citationCount, onCite, `${b.key}-${i}`) }, i)) }, b.key) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", { children: b.items.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: inline(t, citationCount, onCite, `${b.key}-${i}`) }, i)) }, b.key)
+    (b) => b.h !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: inline(b.h, citationCount, onCite, b.key) }, b.key) : b.p !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: inline(b.p, citationCount, onCite, b.key) }, b.key) : b.ordered ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ol", { children: b.items.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: inline(t, citationCount, onCite, `${b.key}-${i}`) }, i)) }, b.key) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", { children: b.items.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: inline(t, citationCount, onCite, `${b.key}-${i}`) }, i)) }, b.key)
   ) });
 }
 
@@ -14698,6 +14704,7 @@ var ChevronIcon = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon, { siz
 var CloseIcon = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon, { size: 14, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M18 6L6 18M6 6l12 12" }) });
 var SparkIcon = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon, { size: 20, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" }) });
 var CheckIcon = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon, { size: 14, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M20 6L9 17l-5-5" }) });
+var RetryIcon = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon, { children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5" }) });
 
 // src/popup/hooks.js
 var import_react3 = __toESM(require_react(), 1);
@@ -14880,17 +14887,73 @@ function timeAgo(ms, now = Date.now()) {
 
 // src/popup/Chat.jsx
 var import_jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
-var SUGGESTIONS = ["Summarize these pages", "What are the key takeaways?", "Where do these pages disagree?"];
+var SUGGESTIONS = ["Summarize these pages in a few bullets", "What are the most important takeaways?", "What should I look at first, and why?"];
 function StatusChip({ status }) {
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: `badge badge-${status}`, children: status === "confirmed-current" ? "current" : status });
 }
-function Citation({ c, highlighted, openTab }) {
+function Pending({ message, now }) {
+  const started = message.startedAt ?? message.createdAt;
+  const secs = Math.max(0, Math.round((now - started) / 1e3));
+  const done = (message.steps || []).slice(0, -1);
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pending", role: "status", children: [
+    done.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("ul", { className: "steps", children: done.map((st, i) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("li", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}),
+      " ",
+      st
+    ] }, i)) }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pending-now", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "spinner" }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: message.statusText || "Working..." }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "elapsed", children: [
+        secs,
+        "s"
+      ] })
+    ] })
+  ] });
+}
+var STAGE_LABELS = { plan: "Understanding", read: "Reading pages", retrieve: "Searching", generate: "Writing" };
+function Trace({ message }) {
+  const [open, setOpen] = (0, import_react4.useState)(false);
+  const t = message.timings;
+  const steps = (message.steps || []).filter((x) => x !== "Writing an answer...");
+  if (!steps.length && !t) return null;
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "trace", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("button", { className: `sources-toggle ${open ? "open" : ""}`, onClick: () => setOpen((v) => !v), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ChevronIcon, {}),
+      " How this was answered"
+    ] }),
+    open && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "trace-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("ul", { className: "steps", children: [
+        steps.map((st, i) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("li", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}),
+          " ",
+          st
+        ] }, i)),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("li", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}),
+          " Wrote the answer"
+        ] })
+      ] }),
+      t?.stages && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "stages", children: Object.entries(t.stages).map(([k, v]) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "stage", children: [
+        STAGE_LABELS[k] || k,
+        " ",
+        formatMs(v)
+      ] }, k)) })
+    ] })
+  ] });
+}
+function SourceGroup({ group, highlight, openTab }) {
   const [expanded, setExpanded] = (0, import_react4.useState)(false);
   const [freshness, setFreshness] = (0, import_react4.useState)(null);
   const ref = (0, import_react4.useRef)(null);
+  const hl = group.items.some((c) => c.index === highlight);
   (0, import_react4.useEffect)(() => {
-    if (highlighted) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [highlighted]);
+    if (hl) {
+      setExpanded(true);
+      ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [hl, highlight]);
+  const first = group.items[0];
   const jump = async (e) => {
     if (!openTab) return;
     e.preventDefault();
@@ -14898,46 +14961,47 @@ function Citation({ c, highlighted, openTab }) {
       const tab = await chrome.tabs.update(openTab.tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
     } catch {
-      chrome.tabs.create({ url: c.tabUrl });
+      chrome.tabs.create({ url: first.tabUrl });
     }
   };
   const check = async () => {
     setFreshness("checking");
-    const res = await send({ type: "CHECK_FRESHNESS", tabId: openTab.tabId, canonicalUrl: c.tabUrl, storedContentHash: c.contentHash }).catch(() => null);
+    const res = await send({ type: "CHECK_FRESHNESS", tabId: openTab.tabId, canonicalUrl: first.tabUrl, storedContentHash: first.contentHash }).catch(() => null);
     if (res?.ok && res.checked) setFreshness(res.matches ? "confirmed-current" : "superseded");
     else setFreshness({ error: res?.reason || res?.error || "Could not check." });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("li", { ref, className: `source ${highlighted ? "source-hl" : ""}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "source-n", children: c.index }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "source-body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("a", { href: c.tabUrl, target: "_blank", rel: "noreferrer", onClick: jump, className: "source-title", children: c.tabTitle }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "source-meta", children: [
-        c.domain,
-        " \xB7 indexed ",
-        c.indexedAt ? new Date(c.indexedAt).toLocaleDateString() : "unknown",
-        typeof freshness === "string" && freshness !== "checking" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(StatusChip, { status: freshness }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(StatusChip, { status: citationStatus({ hasNewerSnapshot: false, liveCheck: null }) }),
-        openTab && freshness === null && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "link", onClick: check, children: "Check freshness" }),
-        freshness === "checking" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: " checking..." }),
-        freshness?.error && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { title: freshness.error, children: " couldn't check" })
+  const status = typeof freshness === "string" && freshness !== "checking" ? freshness : citationStatus({ hasNewerSnapshot: false, liveCheck: null });
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("li", { ref, className: `source ${hl ? "source-hl" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "source-body", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "source-top", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("a", { href: first.tabUrl, target: "_blank", rel: "noreferrer", onClick: jump, className: "source-title", children: first.tabTitle }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "source-meta", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: group.domain }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "nums", children: group.items.map((c) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "cite static", children: c.index }, c.index)) }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(StatusChip, { status }),
+      openTab && freshness === null && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "link", onClick: check, children: "Check freshness" }),
+      freshness === "checking" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: "checking..." }),
+      freshness?.error && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { title: freshness.error, children: "couldn't check" }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "link", onClick: () => setExpanded((v) => !v), children: expanded ? "Hide excerpts" : `Excerpts (${group.items.length})` })
+    ] }),
+    expanded && group.items.map((c) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("blockquote", { className: c.index === highlight ? "hl" : "", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("b", { children: [
+        "[",
+        c.index,
+        "]"
       ] }),
-      c.text && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "link excerpt-toggle", onClick: () => setExpanded((v) => !v), children: expanded ? "Hide excerpt" : "Show excerpt" }),
-      expanded && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("blockquote", { children: c.text })
-    ] })
-  ] });
+      " ",
+      c.text
+    ] }, c.index))
+  ] }) });
 }
-function Pending({ message, now }) {
-  const started = message.startedAt ?? message.createdAt;
-  const secs = Math.max(0, Math.round((now - started) / 1e3));
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pending", role: "status", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "spinner" }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: message.statusText || "Working..." }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "elapsed", children: [
-      secs,
-      "s"
-    ] })
-  ] });
+function groupBySource(citations) {
+  const map = /* @__PURE__ */ new Map();
+  for (const c of citations) {
+    if (!map.has(c.sourceKey)) map.set(c.sourceKey, { sourceKey: c.sourceKey, domain: c.domain, items: [] });
+    map.get(c.sourceKey).items.push(c);
+  }
+  return [...map.values()];
 }
-function AssistantMessage({ message, workingSet, now }) {
+function AssistantMessage({ message, workingSet, now, onRegenerate }) {
   const [showSources, setShowSources] = (0, import_react4.useState)(false);
   const [highlight, setHighlight] = (0, import_react4.useState)(null);
   const [copied, setCopied] = (0, import_react4.useState)(false);
@@ -14970,17 +15034,23 @@ function AssistantMessage({ message, workingSet, now }) {
         message.model ? `${message.model} \xB7 ` : "",
         t ? `${formatMs(t.totalMs)}${t.snippets ? ` \xB7 ${t.snippets} snippets \xB7 ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}` : ""
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "icon-btn small", onClick: copy, title: "Copy answer", children: copied ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CopyIcon, {}) })
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "actions", children: [
+        onRegenerate && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "icon-btn small", onClick: onRegenerate, title: "Ask again", "aria-label": "Regenerate", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RetryIcon, {}) }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "icon-btn small", onClick: copy, title: "Copy answer", "aria-label": "Copy answer", children: copied ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CopyIcon, {}) })
+      ] })
     ] }),
+    status === "done" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Trace, { message }),
     citations.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "sources", children: [
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("button", { className: `sources-toggle ${showSources ? "open" : ""}`, onClick: () => setShowSources((v) => !v), children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ChevronIcon, {}),
-        " Sources (",
-        citations.length,
-        ")"
+        " ",
+        groupBySource(citations).length,
+        " page",
+        groupBySource(citations).length === 1 ? "" : "s",
+        " used"
       ] }),
       showSources && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("ol", { className: "source-list", children: [...citations].sort((a, b) => Number(cited.has(b.index)) - Number(cited.has(a.index)) || a.index - b.index).map((c) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Citation, { c, highlighted: highlight === c.index, openTab: workingSet.find((w) => w.sourceKey === c.sourceKey) }, c.index)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("ul", { className: "source-list", children: groupBySource(citations).map((g) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SourceGroup, { group: g, highlight, openTab: workingSet.find((w) => w.sourceKey === g.sourceKey) }, g.sourceKey)) }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "snapshot-note", children: "Sources point to stored snapshots, which may differ from the live page." })
       ] })
     ] })
@@ -15016,9 +15086,17 @@ function Chat({ thread, workingSet, busy, scope, setScope, canAsk, blockedReason
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("h2", { children: "Ask across your pages" }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: canAsk ? "Answers are written from your indexed pages and cite where each claim came from." : blockedReason }),
       !canAsk && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "btn btn-primary", onClick: onGoPages, children: "Add pages" }),
+      canAsk && scope === "working-set" && workingSet.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "page-chips", children: [
+        workingSet.slice(0, 4).map((w) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "page-chip", title: w.canonicalUrl, children: w.title || w.domain }, w.sourceKey)),
+        workingSet.length > 4 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "page-chip", children: [
+          "+",
+          workingSet.length - 4,
+          " more"
+        ] })
+      ] }),
       canAsk && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "suggestions", children: SUGGESTIONS.map((s) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "suggestion", onClick: () => submit(s), children: s }, s)) })
     ] }) : messages.map(
-      (m) => m.role === "user" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "msg msg-user", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "bubble", children: m.content }) }, m.id) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AssistantMessage, { message: m, workingSet, now }, m.id)
+      (m, idx) => m.role === "user" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "msg msg-user", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "bubble", children: m.content }) }, m.id) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AssistantMessage, { message: m, workingSet, now, onRegenerate: idx === messages.length - 1 && !pending && canAsk ? () => onSend(messages[idx - 1].content) : null }, m.id)
     ) }),
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "composer", children: [
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(

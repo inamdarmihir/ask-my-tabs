@@ -238,10 +238,16 @@ function handleAnswerEvent(event) {
 async function sendQuestion(message) {
   if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
   let ids;
+  let history = [];
   const cfg = await getConfig();
   const provider = ALL_API_PROVIDERS[cfg.llmProvider];
   const model = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : "On-device (Qwen3-0.6B)";
   await mutateThreads((list) => {
+    // Completed question/answer pairs so far, so follow-ups ("and then?") keep their context.
+    const prior = list.find((t) => t.id === message.threadId);
+    history = (prior?.messages || []).flatMap((m, i, all) =>
+      m.role === "assistant" && m.status === "done" && m.content && !m.abstained && all[i - 1]?.role === "user" ? [{ q: all[i - 1].content, a: m.content }] : [],
+    );
     const turn = startTurn(list, {
       threadId: message.threadId,
       question: message.question,
@@ -267,6 +273,7 @@ async function sendQuestion(message) {
       filter: message.filter,
       tabTitles: message.tabTitles,
       sourceCount: message.sourceCount,
+      history,
     });
     if (!ack?.ok) throw new Error("The answer engine didn't start.");
   } catch (err) {
