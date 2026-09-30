@@ -71001,7 +71001,7 @@ ${line}`;
   }
   const lines = [];
   for (const raw of source) {
-    const line = source === text ? raw.trim() : raw.trim();
+    const line = raw.trim();
     if (!line) continue;
     if (line.length <= maxChars) lines.push(line);
     else lines.push(...chunkText(line, { chunkWords: 150, overlapWords: 0 }));

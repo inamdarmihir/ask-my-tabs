@@ -62,3 +62,16 @@ test("chunkStructured with overlapLines 0 never repeats lines across chunks", ()
   assert.equal(new Set(all).size, all.length, "no duplicated lines");
   assert.equal(all.length, 60);
 });
+
+test("chunkStructured groupItems keeps each numbered item's detail lines with its title", () => {
+  const text = ["Site header", ...Array.from({ length: 12 }, (_, i) => `${i + 1}. Title ${i + 1} (x.com)\n${i} points | ${i} comments`)].join("\n");
+  const chunks = chunkStructured(text, { maxChars: 120, overlapLines: 0, groupItems: true });
+  let checked = 0;
+  for (const c of chunks) {
+    for (const m of c.matchAll(/^\d+\. Title (\d+)[^\n]*\n(\d+) points/gm)) {
+      assert.equal(Number(m[2]), Number(m[1]) - 1);
+      checked += 1;
+    }
+  }
+  assert.equal(checked, 12, "every item still has its own stats line right after its title");
+});
