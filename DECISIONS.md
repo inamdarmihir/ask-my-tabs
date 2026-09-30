@@ -60,6 +60,30 @@ The sparse algorithm version is part of the collection name
 (`ask_my_tabs_library__<model>__bm25-stem-hash-v1`), so pages indexed under the old scoring must be
 re-added; the old collection is simply left unused.
 
+## Deep agent (deepagents / LangGraph) for agentic RAG
+
+With an OpenAI-compatible provider the default answer path is a tool-using research agent built with
+`deepagents` (LangChain's agent harness on LangGraph) in `src/lib/deep-agent.js`. Tools: `list_sources`,
+`search_pages` (the hybrid dense + BM25 query), `read_page` (windowed, in order). deepagents adds
+`write_todos` planning and a `researcher` subagent (used for multi-part questions). Every snippet a tool
+returns is numbered in a shared registry; the final answer's `[n]` are renumbered by first use and any
+number no tool returned is removed, so a citation always resolves to a stored snippet.
+- Runs in the offscreen document. deepagents ships a `browser` entry; its Node-only imports (file backends,
+  sandboxes, AsyncLocalStorage) are stubbed at build time (`shims/`, `build.js`) and a minimal `process` is
+  provided by `shims/process-global.js`. Verified in Chrome: real tool loop, streaming, subagent-capable.
+- Cost/latency: 3+ model calls per question, so `agentMode` in Settings can switch to the fixed pipeline.
+  Any deep-agent failure (or no API key, or a non-OpenAI-compatible provider) falls back to the pipeline.
+- Not covered: Gemini and the on-device model use the pipeline; the deep agent needs a model with reliable
+  tool calling.
+
+## Bug found while verifying: settings never reached the offscreen document
+
+`chrome.storage` does not exist in an offscreen document, so `getConfig()` there returned the built-in
+defaults. The API key, provider, model, Qdrant URL and retrieval mode saved in Settings were ignored for
+answering (the popup, which can read storage, still displayed them). The offscreen entry now asks the
+service worker (`GET_CONFIG`); `tests/unit/offscreen-config.test.js` guards against reintroducing it.
+Found by pointing the extension at a local mock OpenAI server and observing that it was never called.
+
 ## Durable identity
 
 Chrome `tabId` is reused across tab lifetimes and is explicitly documented by Chrome as not

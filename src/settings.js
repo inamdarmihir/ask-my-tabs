@@ -19,6 +19,8 @@ const el = {
   llmApiKey: document.getElementById("llm-apikey"),
   llmModel: document.getElementById("llm-model"),
   llmModelHint: document.getElementById("llm-model-hint"),
+  llmBaseUrl: document.getElementById("llm-baseurl"),
+  agentMode: document.getElementById("agent-mode"),
   llmKeyUrl: document.getElementById("llm-key-url"),
   testLlmBtn: document.getElementById("test-llm-btn"),
   llmStatus: document.getElementById("llm-status"),
@@ -83,6 +85,8 @@ async function loadSettings() {
   }
   el.llmApiKey.value = cfg.llmApiKey || "";
   el.llmModel.value = cfg.llmModel || "";
+  el.llmBaseUrl.value = cfg.llmBaseUrl || "";
+  el.agentMode.value = cfg.agentMode || "deep";
   updateLLMVisibility();
   updateLLMProviderHints();
 }
@@ -100,6 +104,8 @@ async function handleSave() {
     llmProvider: llmType === "local" ? "webllm" : el.llmProvider.value,
     llmApiKey: llmType === "local" ? "" : el.llmApiKey.value.trim(),
     llmModel: llmType === "local" ? "" : el.llmModel.value.trim(),
+    llmBaseUrl: llmType === "local" ? "" : el.llmBaseUrl.value.trim(),
+    agentMode: el.agentMode.value,
   };
 
   await saveConfig(patch);

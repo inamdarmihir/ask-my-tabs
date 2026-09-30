@@ -407,6 +407,14 @@ function handleIndexProgress(event) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // The offscreen document can't read chrome.storage, so it gets settings from here.
+  if (message.type === "GET_CONFIG") {
+    getConfig()
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+
   if (message.type === "SEND_QUESTION") {
     sendQuestion(message)
       .then((r) => sendResponse({ ok: true, ...r }))

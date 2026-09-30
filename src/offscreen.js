@@ -7,19 +7,35 @@
 // startup and whenever a CONFIG_CHANGED message arrives. Nothing here hardcodes a URL or
 // provider string -- those live exclusively in src/lib/config.js.
 
+import "../shims/process-global.js"; // must stay first: LangChain reads `process` at load time
 import { loadEmbedder, embed } from "./lib/embeddings.js";
 import { loadLLM, chatJSON as chatJSONWebLLM, chatStream as chatStreamWebLLM } from "./lib/llm.js";
 import { chatJSONApi, chatStreamApi } from "./lib/llm-api.js";
 import { makeClient, QdrantConnectionError, QdrantSchemaError } from "./lib/qdrant.js";
 import { indexSource, removeSourceFromLibrary, listLibrarySources } from "./lib/library.js";
 import { answerQuestion } from "./lib/agent.js";
-import { getConfig } from "./lib/config.js";
+import { answerWithDeepAgent } from "./lib/deep-agent.js";
+import { OPENAI_COMPATIBLE_PROVIDERS } from "./lib/config.js";
+import { DEFAULT_CONFIG } from "./lib/config.js";
 import { libraryCollectionName, DEFAULT_RETRIEVAL_MODE } from "./lib/constants.js";
 import { EMBEDDING_MODEL } from "./lib/embedding-model.js";
 import { SPARSE_ALGORITHM_VERSION } from "./lib/sparse.js";
 
 const LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key, SPARSE_ALGORITHM_VERSION);
 import { embedQuery } from "./lib/embeddings.js";
+
+// Offscreen documents have no chrome.storage (only chrome.runtime), so lib/config.js's getConfig()
+// silently returns the built-in defaults here -- which meant the user's API key, provider and Qdrant
+// URL were never applied to answering. The service worker can read storage; ask it.
+async function getConfig() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_CONFIG" });
+    if (res?.ok && res.config) return res.config;
+  } catch (err) {
+    console.warn("[offscreen] couldn't read settings from the background:", err);
+  }
+  return { ...DEFAULT_CONFIG };
+}
 
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {
@@ -47,8 +63,8 @@ function buildLLMFunctions(cfg) {
   }
   const { llmProvider: provider, llmApiKey: apiKey, llmModel: model } = cfg;
   return {
-    chatJSON: (messages) => chatJSONApi(messages, { provider, apiKey, model }),
-    chatStream: (messages, onToken) => chatStreamApi(messages, { provider, apiKey, model }, onToken),
+    chatJSON: (messages) => chatJSONApi(messages, { provider, apiKey, model, baseUrl: cfg.llmBaseUrl }),
+    chatStream: (messages, onToken) => chatStreamApi(messages, { provider, apiKey, model, baseUrl: cfg.llmBaseUrl }, onToken),
   };
 }
 
@@ -264,24 +280,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const cfg = await getConfig();
         await ensureModelsLoaded(cfg);
         await ensureCollectionReady();
-        const result = await answerQuestion(
-          message.question,
-          {
-            client: qdrant,
-            collection: LIBRARY_COLLECTION,
-            mode: message.mode || cfg.retrievalMode || DEFAULT_RETRIEVAL_MODE,
-            filter: message.filter,
-            tabTitles: message.tabTitles,
-            sourceCount: message.sourceCount ?? null,
-            history: message.history || [],
-            capable: cfg.llmProvider !== "webllm",
-            embed: embedQuery, // query-time embedding uses the bge instruction prefix
-            chatJSON: llmFunctions.chatJSON,
-            chatStream: llmFunctions.chatStream,
-          },
-          (status) => broadcast({ type: "AGENT_STATUS", requestId: message.requestId, status }),
-          (delta, full) => broadcast({ type: "ANSWER_TOKEN", requestId: message.requestId, delta, full }),
-        );
+        const status = (text) => broadcast({ type: "AGENT_STATUS", requestId: message.requestId, status: text });
+        const token = (delta, full) => broadcast({ type: "ANSWER_TOKEN", requestId: message.requestId, delta, full });
+        const mode = message.mode || cfg.retrievalMode || DEFAULT_RETRIEVAL_MODE;
+        const deep = cfg.agentMode !== "pipeline" && !!OPENAI_COMPATIBLE_PROVIDERS[cfg.llmProvider] && !!cfg.llmApiKey;
+
+        let result = null;
+        if (deep) {
+          try {
+            result = await answerWithDeepAgent(
+              { cfg, client: qdrant, collection: LIBRARY_COLLECTION, mode, filter: message.filter, embed: embedQuery, sourceCount: message.sourceCount ?? null, history: message.history || [], question: message.question },
+              status,
+              token,
+            );
+          } catch (err) {
+            // Never leave the user without an answer: fall back to the fixed pipeline.
+            console.warn("[offscreen] deep agent failed, using the pipeline:", err);
+            status(`The research agent hit a problem (${String(err?.message || err).slice(0, 80)}). Using the fast path...`);
+          }
+        }
+        if (!result) {
+          result = await answerQuestion(
+            message.question,
+            {
+              client: qdrant,
+              collection: LIBRARY_COLLECTION,
+              mode,
+              filter: message.filter,
+              tabTitles: message.tabTitles,
+              sourceCount: message.sourceCount ?? null,
+              history: message.history || [],
+              capable: cfg.llmProvider !== "webllm",
+              embed: embedQuery, // query-time embedding uses the bge instruction prefix
+              chatJSON: llmFunctions.chatJSON,
+              chatStream: llmFunctions.chatStream,
+            },
+            status,
+            token,
+          );
+        }
         console.info("[offscreen] answered", result.timings);
         broadcast({ type: "ANSWER_DONE", requestId: message.requestId, ...result });
       } catch (err) {

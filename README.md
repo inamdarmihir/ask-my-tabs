@@ -19,6 +19,9 @@ vector database and a language model that you choose.
 
 - **Cited answers.** Every claim is tagged `[1]`, `[2]`, ... and mapped back to the page it came
   from. Out-of-range or invented citations are detected and flagged.
+- **Agentic RAG with deepagents.** With an OpenAI-compatible provider, a LangGraph research agent
+  plans, searches (hybrid BM25 + dense) and reads your pages as needed, then answers with citations that
+  are verified against what it actually retrieved. Falls back to a fast fixed pipeline. Toggle in Settings.
 - **Multi-hop retrieval.** The agent splits a comparative question into per-topic queries, checks
   whether the results are sufficient, and issues one refined follow-up search when they are not.
 - **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2, b=0.75,

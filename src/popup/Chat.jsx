@@ -46,7 +46,10 @@ function Trace({ message }) {
           <ul className="steps">{steps.map((st, i) => <li key={i}><CheckIcon /> {st}</li>)}<li><CheckIcon /> Wrote the answer</li></ul>
           {t?.mode && (
             <p className="trace-line">
-              {t.mode === "read" ? "Read the page directly" : "Searched for the best matches"} · {t.intent} question{t.repaired ? " · citations corrected" : ""}
+              {t.mode === "deep"
+                ? `Research agent · ${t.toolCalls} tool call${t.toolCalls === 1 ? "" : "s"}`
+                : `${t.mode === "read" ? "Read the page directly" : "Searched for the best matches"} · ${t.intent} question`}
+              {t.repaired ? " · citations corrected" : ""}
             </p>
           )}
           {t?.stages && (

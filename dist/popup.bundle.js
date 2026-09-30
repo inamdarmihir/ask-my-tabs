@@ -14746,10 +14746,17 @@ var DEFAULT_CONFIG = {
   llmApiKey: "",
   llmModel: "",
   // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+  // Optional OpenAI-compatible endpoint (Azure, Ollama, LM Studio, a proxy). Empty = the provider's own URL.
+  llmBaseUrl: "",
   // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
   // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
-  retrievalMode: "hybrid"
+  retrievalMode: "hybrid",
   // "hybrid" | "dense" | "sparse"
+  // How answers are produced. "deep" = a tool-using research agent (deepagents/LangGraph) that plans,
+  // searches and reads your pages as needed; used only with OpenAI-compatible providers. "pipeline" =
+  // the fixed fast path (plan, read or search, write). Anything the deep agent can't run falls back to it.
+  agentMode: "deep"
+  // "deep" | "pipeline"
 };
 async function getConfig() {
   if (typeof chrome === "undefined" || !chrome?.storage?.local) {
@@ -14935,10 +14942,7 @@ function Trace({ message }) {
         ] })
       ] }),
       t?.mode && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("p", { className: "trace-line", children: [
-        t.mode === "read" ? "Read the page directly" : "Searched for the best matches",
-        " \xB7 ",
-        t.intent,
-        " question",
+        t.mode === "deep" ? `Research agent \xB7 ${t.toolCalls} tool call${t.toolCalls === 1 ? "" : "s"}` : `${t.mode === "read" ? "Read the page directly" : "Searched for the best matches"} \xB7 ${t.intent} question`,
         t.repaired ? " \xB7 citations corrected" : ""
       ] }),
       t?.stages && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "stages", children: Object.entries(t.stages).map(([k, v]) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "stage", children: [

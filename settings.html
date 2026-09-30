@@ -86,6 +86,19 @@
             <button id="list-models-btn" class="secondary" type="button" style="margin-top:6px">Load models for this key</button>
             <div class="field-hint" id="llm-model-hint">Default: gpt-6-luna</div>
           </div>
+          <div class="field">
+            <label for="llm-baseurl">Custom endpoint (Optional)</label>
+            <input type="url" id="llm-baseurl" placeholder="e.g. http://127.0.0.1:11434/v1 (Ollama, LM Studio, Azure, a proxy)" />
+            <div class="field-hint">Any OpenAI-compatible base URL. Leave blank to use the provider's own.</div>
+          </div>
+          <div class="field">
+            <label for="agent-mode">Answer strategy</label>
+            <select id="agent-mode">
+              <option value="deep">Deep agent (recommended): plans, searches and reads your pages as needed</option>
+              <option value="pipeline">Fast pipeline: one search or read, then answer</option>
+            </select>
+            <div class="field-hint">The deep agent makes several model calls per question and is used with OpenAI-compatible providers only. It falls back to the fast pipeline if anything goes wrong.</div>
+          </div>
           <div class="test-row">
             <button id="test-llm-btn" class="secondary">Test key</button>
             <span id="llm-status" class="status-badge"></span>

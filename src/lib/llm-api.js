@@ -95,8 +95,8 @@ function resolveModel(provider, model) {
   return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
 }
 
-function providerBaseUrl(provider) {
-  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
+function providerBaseUrl(provider, override) {
+  return (override || "").replace(/\/+$/, "") || OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ export async function testApiKey({ provider, apiKey, model }) {
 
 // Non-streaming chat call for the agent's internal decisions (query planning, sufficiency
 // checks). Returns the raw text content of the model's reply.
-export async function chatJSONApi(messages, { provider, apiKey, model }) {
+export async function chatJSONApi(messages, { provider, apiKey, model, baseUrl: baseUrlOverride }) {
   const resolvedModel = resolveModel(provider, model);
 
   if (provider === "gemini") {
@@ -155,7 +155,7 @@ export async function chatJSONApi(messages, { provider, apiKey, model }) {
     return json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
   }
 
-  const baseUrl = providerBaseUrl(provider);
+  const baseUrl = providerBaseUrl(provider, baseUrlOverride);
   const res = await openAIRequest(messages, {
     apiKey,
     model: resolvedModel,
@@ -169,7 +169,7 @@ export async function chatJSONApi(messages, { provider, apiKey, model }) {
 // Streaming chat call for the final user-facing answer. Calls `onToken(delta, fullSoFar)` for
 // each new token and returns the complete response string. Behaviour is identical to the
 // WebLLM chatStream() in llm.js so callers need no special-casing.
-export async function chatStreamApi(messages, { provider, apiKey, model }, onToken) {
+export async function chatStreamApi(messages, { provider, apiKey, model, baseUrl: baseUrlOverride }, onToken) {
   const resolvedModel = resolveModel(provider, model);
   let full = "";
 
@@ -197,7 +197,7 @@ export async function chatStreamApi(messages, { provider, apiKey, model }, onTok
   }
 
   // OpenAI / Groq: standard SSE streaming
-  const baseUrl = providerBaseUrl(provider);
+  const baseUrl = providerBaseUrl(provider, baseUrlOverride);
   const res = await openAIRequest(messages, { apiKey, model: resolvedModel, baseUrl, stream: true });
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

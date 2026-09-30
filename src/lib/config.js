@@ -51,10 +51,17 @@ export const DEFAULT_CONFIG = {
   llmProvider: "webllm", // "openai" | "groq" | "gemini" | "webllm"
   llmApiKey: "",
   llmModel: "", // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+  // Optional OpenAI-compatible endpoint (Azure, Ollama, LM Studio, a proxy). Empty = the provider's own URL.
+  llmBaseUrl: "",
 
   // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
   // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
   retrievalMode: "hybrid", // "hybrid" | "dense" | "sparse"
+
+  // How answers are produced. "deep" = a tool-using research agent (deepagents/LangGraph) that plans,
+  // searches and reads your pages as needed; used only with OpenAI-compatible providers. "pipeline" =
+  // the fixed fast path (plan, read or search, write). Anything the deep agent can't run falls back to it.
+  agentMode: "deep", // "deep" | "pipeline"
 };
 
 // Returns the merged config (stored values on top of defaults). Works in both Chrome extension

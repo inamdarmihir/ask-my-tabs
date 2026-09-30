@@ -72,10 +72,17 @@ var init_config = __esm({
       llmApiKey: "",
       llmModel: "",
       // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+      // Optional OpenAI-compatible endpoint (Azure, Ollama, LM Studio, a proxy). Empty = the provider's own URL.
+      llmBaseUrl: "",
       // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
       // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
-      retrievalMode: "hybrid"
+      retrievalMode: "hybrid",
       // "hybrid" | "dense" | "sparse"
+      // How answers are produced. "deep" = a tool-using research agent (deepagents/LangGraph) that plans,
+      // searches and reads your pages as needed; used only with OpenAI-compatible providers. "pipeline" =
+      // the fixed fast path (plan, read or search, write). Anything the deep agent can't run falls back to it.
+      agentMode: "deep"
+      // "deep" | "pipeline"
     };
   }
 });
@@ -532,6 +539,10 @@ function handleIndexProgress(event) {
   setJob({ current: { ...jobState.current, stage: event.stage, done: event.done ?? 0, total: event.total ?? 0 } });
 }
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "GET_CONFIG") {
+    getConfig().then((config) => sendResponse({ ok: true, config })).catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
   if (message.type === "SEND_QUESTION") {
     sendQuestion(message).then((r) => sendResponse({ ok: true, ...r })).catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
     return true;

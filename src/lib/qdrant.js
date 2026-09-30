@@ -242,7 +242,8 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
       while (true) {
         const res = await request(`/collections/${encodeURIComponent(collection)}/points/scroll`, {
           method: "POST",
-          body: { filter, limit: batchSize, offset, with_payload: withPayload, with_vector: withVector },
+          // withPayload: true | false | ["field", ...] (only those fields, e.g. to skip chunk text)
+          body: { filter, limit: batchSize, offset, with_payload: Array.isArray(withPayload) ? { include: withPayload } : withPayload, with_vector: withVector },
         });
         out.push(...res.result.points);
         offset = res.result.next_page_offset;

@@ -35,10 +35,17 @@ var DEFAULT_CONFIG = {
   llmApiKey: "",
   llmModel: "",
   // empty = use the provider's defaultModel from OPENAI_COMPATIBLE_PROVIDERS
+  // Optional OpenAI-compatible endpoint (Azure, Ollama, LM Studio, a proxy). Empty = the provider's own URL.
+  llmBaseUrl: "",
   // Retrieval mode. Users rarely need to change this; it is exposed in settings for power
   // users who want to compare modes. See src/lib/agent.js and DECISIONS.md for what each means.
-  retrievalMode: "hybrid"
+  retrievalMode: "hybrid",
   // "hybrid" | "dense" | "sparse"
+  // How answers are produced. "deep" = a tool-using research agent (deepagents/LangGraph) that plans,
+  // searches and reads your pages as needed; used only with OpenAI-compatible providers. "pipeline" =
+  // the fixed fast path (plan, read or search, write). Anything the deep agent can't run falls back to it.
+  agentMode: "deep"
+  // "deep" | "pipeline"
 };
 async function getConfig() {
   if (typeof chrome === "undefined" || !chrome?.storage?.local) {
@@ -248,7 +255,8 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
       while (true) {
         const res = await request(`/collections/${encodeURIComponent(collection)}/points/scroll`, {
           method: "POST",
-          body: { filter, limit: batchSize, offset, with_payload: withPayload, with_vector: withVector }
+          // withPayload: true | false | ["field", ...] (only those fields, e.g. to skip chunk text)
+          body: { filter, limit: batchSize, offset, with_payload: Array.isArray(withPayload) ? { include: withPayload } : withPayload, with_vector: withVector }
         });
         out.push(...res.result.points);
         offset = res.result.next_page_offset;
@@ -318,8 +326,8 @@ function resolveModel(provider, model) {
   if (model) return model;
   return OPENAI_COMPATIBLE_PROVIDERS[provider]?.defaultModel || "gpt-6-luna";
 }
-function providerBaseUrl(provider) {
-  return OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
+function providerBaseUrl(provider, override) {
+  return (override || "").replace(/\/+$/, "") || OPENAI_COMPATIBLE_PROVIDERS[provider]?.baseUrl;
 }
 async function testApiKey({ provider, apiKey, model }) {
   if (!apiKey) return { ok: false, message: "Enter an API key first." };
