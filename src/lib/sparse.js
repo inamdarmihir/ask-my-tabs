@@ -1,45 +1,34 @@
-// Deterministic lexical sparse representation for hybrid retrieval.
+// BM25 sparse representation for hybrid retrieval.
 //
-// IMPORTANT NAMING NOTE (read before renaming anything in here): this is NOT BM25. BM25 requires
-// corpus-wide document-frequency statistics, average document length, and specific k1/b
-// weighting that update correctly as documents are added/changed/removed. None of that is
-// implemented here -- there is no corpus-level state at all, which is exactly what makes this
-// representation trivial to keep correct under this project's insert/replace/delete lifecycle.
-// This is a per-chunk, hashed, log-dampened TERM-FREQUENCY sparse vector. Call it that
-// ("lexical TF sparse vector") everywhere -- in code, in the eval report, in the README.
+// Okapi BM25 scores a document d for a query q as
+//     sum over query terms t of  IDF(t) * tf(t,d)*(k1+1) / ( tf(t,d) + k1*(1 - b + b*|d|/avgdl) )
+// and is split here the way Qdrant's documented BM25 recipe splits it:
+//   * DOCUMENT side (this file, at index time): each term's weight is the saturating,
+//     length-normalized TF part above, with k1 = 1.2 and b = 0.75. `|d|` is the chunk's own
+//     token count; `avgdl` is a fixed estimate (BM25.avgdl) of the mean chunk length, because a
+//     stored vector cannot know the corpus average as documents come and go.
+//   * QUERY side (this file): each distinct query term has weight 1.
+//   * IDF (Qdrant, at query time): the collection's sparse vector is configured with
+//     `modifier: "idf"` (src/lib/qdrant.js), so Qdrant multiplies each matched term by
+//     ln(1 + (N - n + 0.5) / (n + 0.5)) computed from LIVE collection statistics. Inserts,
+//     replacements and deletes therefore keep IDF correct with no corpus state kept here.
+// The one approximation versus textbook BM25 is the fixed avgdl; everything else is exact.
 //
-// Algorithm, frozen and versioned as SPARSE_ALGORITHM_VERSION so eval runs can record exactly
-// which revision produced a given result:
-//   1. Tokenize: lowercase the text, then extract runs matching
-//        [a-z0-9]+(?:[._-:][a-z0-9]+)*
-//      This keeps things like "v1.11.0", "ECONNRESET" -> "econnreset", "gpt-5.6", "3.11.2"
-//      intact as single tokens instead of shattering them into digits -- which matters directly
-//      for the eval's "exact identifier/error/version" question category. Plain words tokenize
-//      the same way a naive \w+ split would.
-//   2. Drop tokens in a small fixed English stopword list (see STOPWORDS) AND drop any token
-//      shorter than MIN_TOKEN_LEN (2), to keep single letters/punctuation noise out.
-//   3. Count raw term frequency per surviving token within the chunk.
-//   4. Weight with sublinear log dampening: weight = 1 + log(count). This avoids one repeated
-//      common word dominating a chunk's vector, without claiming any corpus-level IDF signal.
-//   5. Hash each token to a fixed-size index space with 32-bit FNV-1a mod SPARSE_DIM
-//      (SPARSE_DIM = 2^18 = 262144). This is the standard "hashing trick": if two different
-//      tokens collide on the same index (expected to be rare at this project's corpus size --
-//      a few thousand distinct tokens into a 262144-slot space), their weights are summed at
-//      that index rather than one silently overwriting the other. Collisions are not detected
-//      or reported per-query; this is a known, accepted, documented lossy tradeoff of feature
-//      hashing, not a claim of collision-free indexing.
-//   6. Return { indices, values } with indices sorted ascending and de-duplicated (post-collision
-//      merge) -- the shape Qdrant's REST API expects for a sparse vector.
-//
-// Deterministic: same text + same algorithm version always produces the same vector. No corpus
-// state, no randomness, no dependency on insertion order.
-//
-// IDF is applied by Qdrant, not here: the collection's sparse vector is configured with
-// `modifier: "idf"` (src/lib/qdrant.js), so Qdrant weights each query term by its inverse
-// document frequency across the live collection at query time. The effective scoring is
-// log-TF x IDF. It is still not BM25 (no document-length normalization, no k1/b saturation).
+// Text pipeline (frozen, versioned as SPARSE_ALGORITHM_VERSION so results record which revision
+// produced them):
+//   1. Lowercase; tokens are runs of [a-z0-9]+(?:[._:-][a-z0-9]+)* so identifiers such as
+//      "v1.11.0", "ECONNRESET" or "gpt-5.6" survive as single tokens.
+//   2. Drop a small English stopword list and tokens shorter than 2 characters.
+//   3. Porter-stem purely alphabetic tokens ("running", "runs" -> "run"); identifiers containing
+//      digits or separators are left intact.
+//   4. Hash each token to a 2^18 index space with 32-bit FNV-1a. Colliding tokens have their
+//      weights summed (documented, accepted lossy tradeoff of feature hashing).
+// Deterministic: same text + same algorithm version always yields the same vector.
 
-export const SPARSE_ALGORITHM_VERSION = "lexical-tf-hash-v1";
+import { stemmer } from "stemmer";
+
+export const SPARSE_ALGORITHM_VERSION = "bm25-stem-hash-v1";
+export const BM25 = { k1: 1.2, b: 0.75, avgdl: 100 };
 export const SPARSE_DIM = 262144; // 2^18
 
 const TOKEN_PATTERN = /[a-z0-9]+(?:[._:-][a-z0-9]+)*/g;
@@ -60,7 +49,9 @@ const STOPWORDS = new Set([
 export function tokenize(text) {
   const lower = String(text).toLowerCase();
   const matches = lower.match(TOKEN_PATTERN) || [];
-  return matches.filter((t) => t.length >= MIN_TOKEN_LEN && !STOPWORDS.has(t));
+  return matches
+    .filter((t) => t.length >= MIN_TOKEN_LEN && !STOPWORDS.has(t))
+    .map((t) => (/^[a-z]+$/.test(t) ? stemmer(t) : t));
 }
 
 // 32-bit FNV-1a. Fast, dependency-free, and stable across JS engines (pure integer ops).
@@ -77,21 +68,38 @@ export function tokenIndex(token) {
   return fnv1a32(token) % SPARSE_DIM;
 }
 
-// Builds the sparse vector for one chunk of text. Returns { indices, values }, both arrays,
-// indices strictly ascending and unique -- ready to hand to Qdrant as a sparse vector.
-export function sparseVector(text) {
-  const tokens = tokenize(text);
-  const counts = new Map(); // token -> raw count
+function countTokens(tokens) {
+  const counts = new Map();
   for (const t of tokens) counts.set(t, (counts.get(t) || 0) + 1);
+  return counts;
+}
 
-  const weighted = new Map(); // index -> summed weight (collision-merged)
-  for (const [token, count] of counts) {
+// Merges per-token weights into { indices, values }: indices strictly ascending and unique
+// (colliding tokens summed) -- the shape Qdrant's REST API expects for a sparse vector.
+function toSparse(weightsByToken) {
+  const merged = new Map();
+  for (const [token, w] of weightsByToken) {
     const idx = tokenIndex(token);
-    const weight = 1 + Math.log(count);
-    weighted.set(idx, (weighted.get(idx) || 0) + weight);
+    merged.set(idx, (merged.get(idx) || 0) + w);
   }
+  const indices = Array.from(merged.keys()).sort((a, b) => a - b);
+  return { indices, values: indices.map((i) => merged.get(i)) };
+}
 
-  const indices = Array.from(weighted.keys()).sort((a, b) => a - b);
-  const values = indices.map((i) => weighted.get(i));
-  return { indices, values };
+// Document-side BM25 vector for one chunk (see the header for the formula).
+export function sparseDocVector(text, { k1 = BM25.k1, b = BM25.b, avgdl = BM25.avgdl } = {}) {
+  const tokens = tokenize(text);
+  const dl = tokens.length;
+  const weights = new Map();
+  for (const [token, tf] of countTokens(tokens)) {
+    weights.set(token, (tf * (k1 + 1)) / (tf + k1 * (1 - b + (b * dl) / avgdl)));
+  }
+  return toSparse(weights);
+}
+
+// Query-side vector: every distinct term weighs 1; Qdrant's IDF modifier supplies the rest.
+export function sparseQueryVector(text) {
+  const weights = new Map();
+  for (const token of new Set(tokenize(text))) weights.set(token, 1);
+  return toSparse(weights);
 }

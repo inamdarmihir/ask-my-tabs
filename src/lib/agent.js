@@ -10,7 +10,7 @@
 // `SUFFICIENCY_SCORE_FLOOR = 0.45` constant assumed cosine's roughly-[0,1] range; it is gone
 // (see DECISIONS.md) and replaced with `hasDiscriminativeSignal`, below.
 
-import { sparseVector } from "./sparse.js";
+import { sparseQueryVector } from "./sparse.js";
 import { startTimer } from "./timing.js";
 import { selectReadingChunks, latestSnapshot, answerSystemPrompt, historyMessages } from "./reading.js";
 
@@ -173,7 +173,7 @@ export function hitsPerSource(topK, sourceCount) {
 // vectorstore's, so agent logic above this line doesn't need to know it's talking to Qdrant.
 export async function retrieve({ client, collection, mode, filter, query, embed, topK = TOP_K_PER_QUERY, sourceCount = null, freshnessBoost = null }) {
   const [denseVec] = await embed([query]);
-  const sparseVec = sparseVector(query);
+  const sparseVec = sparseQueryVector(query);
   const raw = await client.query(collection, {
     mode,
     dense: Array.from(denseVec),

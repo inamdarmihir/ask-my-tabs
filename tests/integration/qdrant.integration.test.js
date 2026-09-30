@@ -96,7 +96,7 @@ test("indexSource -> query round trip: dense, sparse, and hybrid modes all find 
 
     for (const mode of ["dense", "sparse", "hybrid"]) {
       const [denseQ] = await fakeEmbed(["alpha"]);
-      const { sparseVector } = await import("../../src/lib/sparse.js");
+      const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
       const hits = await client.query(name, {
         mode,
         dense: Array.from(denseQ),
@@ -119,7 +119,7 @@ test("working-set filter (sourceKey match-any) restricts results to the requeste
     await indexSource(client, name, { canonicalUrl: "https://example.com/b", title: "B", text: "alpha content here for b", embed: fakeEmbed });
 
     const { buildScopeFilter } = await import("../../src/lib/filters.js");
-    const { sparseVector } = await import("../../src/lib/sparse.js");
+    const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
     const [denseQ] = await fakeEmbed(["alpha"]);
     const hits = await client.query(name, {
       mode: "hybrid",
@@ -143,7 +143,7 @@ test("domain filter restricts results at the same eligible corpus", { skip: !qdr
     await indexSource(client, name, { canonicalUrl: "https://two.example.com/doc", title: "Two", text: "alpha content on domain two", embed: fakeEmbed });
 
     const { buildScopeFilter } = await import("../../src/lib/filters.js");
-    const { sparseVector } = await import("../../src/lib/sparse.js");
+    const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
     const [denseQ] = await fakeEmbed(["alpha"]);
     const hits = await client.query(name, {
       mode: "hybrid",
@@ -261,7 +261,7 @@ test("ensureCollection upgrades a pre-IDF sparse vector in place without touchin
 
 test("IDF: a query term that is rare in the corpus outranks one that appears everywhere", { skip: !qdrantAvailable }, async () => {
   const name = randomCollectionName();
-  const { sparseVector } = await import("../../src/lib/sparse.js");
+  const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
   try {
     await client.ensureCollection(name);
     // "common" appears in every doc (five times in the first); "zebra" only in the second.
@@ -272,7 +272,7 @@ test("IDF: a query term that is rare in the corpus outranks one that appears eve
     for (let i = 0; i < 4; i++) {
       await indexSource(client, name, { canonicalUrl: `https://example.com/pad${i}`, title: `P${i}`, text: `common padding ${i}`, embed: fakeEmbed });
     }
-    const hits = await client.query(name, { mode: "sparse", sparse: sparseVector("common zebra"), limit: 3 });
+    const hits = await client.query(name, { mode: "sparse", sparse: sparseQueryVector("common zebra"), limit: 3 });
     assert.equal(hits[0].payload.canonicalUrl, "https://example.com/rare");
   } finally {
     await client.deleteCollection(name).catch(() => {});
@@ -281,7 +281,7 @@ test("IDF: a query term that is rare in the corpus outranks one that appears eve
 
 test("weighted RRF: weights shift hybrid ranking toward the favoured retriever", { skip: !qdrantAvailable }, async () => {
   const name = randomCollectionName();
-  const { sparseVector } = await import("../../src/lib/sparse.js");
+  const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
   try {
     await client.ensureCollection(name);
     // Dense (fakeEmbed) favours the "alpha" doc; sparse favours the doc containing "gamma".
@@ -290,7 +290,7 @@ test("weighted RRF: weights shift hybrid ranking toward the favoured retriever",
     const [denseQ] = await fakeEmbed(["alpha"]);
     // The sparse-wins doc still appears (rank 2) in the dense prefetch, so with the default k=60
     // rank differences are too small for moderate weights to flip. k=1 makes ranks matter.
-    const base = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseVector("gamma"), limit: 2, rrfK: 1 };
+    const base = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseQueryVector("gamma"), limit: 2, rrfK: 1 };
 
     const denseHeavy = await client.query(name, { ...base, rrfWeights: { dense: 5, sparse: 1 } });
     const sparseHeavy = await client.query(name, { ...base, rrfWeights: { dense: 1, sparse: 5 } });
@@ -303,14 +303,14 @@ test("weighted RRF: weights shift hybrid ranking toward the favoured retriever",
 
 test("groupBy sourceKey caps hits per source so a long page can't crowd out others", { skip: !qdrantAvailable }, async () => {
   const name = randomCollectionName();
-  const { sparseVector } = await import("../../src/lib/sparse.js");
+  const { sparseDocVector: sparseVector, sparseQueryVector } = await import("../../src/lib/sparse.js");
   try {
     await client.ensureCollection(name);
     // A long page produces many matching chunks; a short page produces one.
     await indexSource(client, name, { canonicalUrl: "https://example.com/long", title: "Long", text: "alpha topic words ".repeat(400), embed: fakeEmbed });
     await indexSource(client, name, { canonicalUrl: "https://example.com/short", title: "Short", text: "alpha topic words", embed: fakeEmbed });
     const [denseQ] = await fakeEmbed(["alpha"]);
-    const q = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseVector("alpha topic"), limit: 4 };
+    const q = { mode: "hybrid", dense: Array.from(denseQ), sparse: sparseQueryVector("alpha topic"), limit: 4 };
 
     const grouped = await client.query(name, { ...q, groupBy: "sourceKey", groupSize: 2 });
     const perSource = {};

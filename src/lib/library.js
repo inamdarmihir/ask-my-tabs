@@ -5,7 +5,7 @@
 
 import { chunkText, chunkStructured, hashText } from "./chunk.js";
 import { canonicalizeUrl, domainOf, sourceKeyFor, chunkPointId } from "./ids.js";
-import { sparseVector, SPARSE_ALGORITHM_VERSION } from "./sparse.js";
+import { sparseDocVector, SPARSE_ALGORITHM_VERSION } from "./sparse.js";
 import { startTimer } from "./timing.js";
 
 // Chunks embedded per model call. Small enough to report progress and keep peak memory low, large
@@ -108,7 +108,7 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
   const points = pieces.map((chunk, i) => ({
     id: ids[i],
     dense: Array.from(denseVectors[i]),
-    sparse: sparseVector(chunk),
+    sparse: sparseDocVector(chunk),
     payload: {
       sourceKey,
       canonicalUrl,

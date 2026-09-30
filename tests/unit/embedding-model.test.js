@@ -8,6 +8,7 @@ import { DENSE_SIZE } from "../../src/lib/qdrant.js";
 test("collection name is keyed by the embedding model so incompatible vectors never mix", () => {
   assert.equal(libraryCollectionName("leaf-ir-q8"), "ask_my_tabs_library__leaf-ir-q8");
   assert.notEqual(libraryCollectionName("a"), libraryCollectionName("b"));
+  assert.equal(libraryCollectionName("leaf-ir-q8", "bm25-stem-hash-v1"), "ask_my_tabs_library__leaf-ir-q8__bm25-stem-hash-v1");
 });
 
 test("the configured model's output size matches the Qdrant collection schema", () => {

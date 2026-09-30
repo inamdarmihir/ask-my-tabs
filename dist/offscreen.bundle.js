@@ -40906,16 +40906,16 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
          * @returns {void}
          */
         _singleTransform4(data, out, outOff, off, step, inv) {
-          const step2 = step * 2;
-          const step3 = step * 3;
+          const step22 = step * 2;
+          const step32 = step * 3;
           const Ar2 = data[off];
           const Ai = data[off + 1];
           const Br2 = data[off + step];
           const Bi = data[off + step + 1];
-          const Cr2 = data[off + step2];
-          const Ci = data[off + step2 + 1];
-          const Dr2 = data[off + step3];
-          const Di = data[off + step3 + 1];
+          const Cr2 = data[off + step22];
+          const Ci = data[off + step22 + 1];
+          const Dr2 = data[off + step32];
+          const Di = data[off + step32 + 1];
           const T0r = Ar2 + Cr2;
           const T0i = Ai + Ci;
           const T1r = Ar2 - Cr2;
@@ -41057,12 +41057,12 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
          * @param {number} inv The value of inverse.
          */
         _singleRealTransform4(data, out, outOff, off, step, inv) {
-          const step2 = step * 2;
-          const step3 = step * 3;
+          const step22 = step * 2;
+          const step32 = step * 3;
           const Ar2 = data[off];
           const Br2 = data[off + step];
-          const Cr2 = data[off + step2];
-          const Dr2 = data[off + step3];
+          const Cr2 = data[off + step22];
+          const Dr2 = data[off + step32];
           const T0r = Ar2 + Cr2;
           const T1r = Ar2 - Cr2;
           const T2r = Br2 + Dr2;
@@ -70808,7 +70808,7 @@ function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) {
               [DENSE_VECTOR_NAME]: { size: denseSize, distance: "Cosine" }
             },
             // Qdrant applies IDF at query time from live collection statistics, turning the
-            // client's log-TF vectors (src/lib/sparse.js) into TF-IDF scoring without any
+            // client's BM25 term weights (src/lib/sparse.js) into full BM25 scoring without any
             // client-side corpus state.
             sparse_vectors: {
               [SPARSE_VECTOR_NAME]: { index: { on_disk: false }, modifier: "idf" }
@@ -71095,8 +71095,124 @@ async function chunkPointId(sourceKey, contentHash, chunkIndex) {
   return hashToUuidV4Shape(hex);
 }
 
+// node_modules/stemmer/index.js
+var step2list = {
+  ational: "ate",
+  tional: "tion",
+  enci: "ence",
+  anci: "ance",
+  izer: "ize",
+  bli: "ble",
+  alli: "al",
+  entli: "ent",
+  eli: "e",
+  ousli: "ous",
+  ization: "ize",
+  ation: "ate",
+  ator: "ate",
+  alism: "al",
+  iveness: "ive",
+  fulness: "ful",
+  ousness: "ous",
+  aliti: "al",
+  iviti: "ive",
+  biliti: "ble",
+  logi: "log"
+};
+var step3list = {
+  icate: "ic",
+  ative: "",
+  alize: "al",
+  iciti: "ic",
+  ical: "ic",
+  ful: "",
+  ness: ""
+};
+var consonant = "[^aeiou]";
+var vowel = "[aeiouy]";
+var consonants = "(" + consonant + "[^aeiouy]*)";
+var vowels = "(" + vowel + "[aeiou]*)";
+var gt0 = new RegExp("^" + consonants + "?" + vowels + consonants);
+var eq1 = new RegExp(
+  "^" + consonants + "?" + vowels + consonants + vowels + "?$"
+);
+var gt1 = new RegExp("^" + consonants + "?(" + vowels + consonants + "){2,}");
+var vowelInStem = new RegExp("^" + consonants + "?" + vowel);
+var consonantLike = new RegExp("^" + consonants + vowel + "[^aeiouwxy]$");
+var sfxLl = /ll$/;
+var sfxE = /^(.+?)e$/;
+var sfxY = /^(.+?)y$/;
+var sfxIon = /^(.+?(s|t))(ion)$/;
+var sfxEdOrIng = /^(.+?)(ed|ing)$/;
+var sfxAtOrBlOrIz = /(at|bl|iz)$/;
+var sfxEED = /^(.+?)eed$/;
+var sfxS = /^.+?[^s]s$/;
+var sfxSsesOrIes = /^.+?(ss|i)es$/;
+var sfxMultiConsonantLike = /([^aeiouylsz])\1$/;
+var step2 = /^(.+?)(ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi)$/;
+var step3 = /^(.+?)(icate|ative|alize|iciti|ical|ful|ness)$/;
+var step4 = /^(.+?)(al|ance|ence|er|ic|able|ible|ant|ement|ment|ent|ou|ism|ate|iti|ous|ive|ize)$/;
+function stemmer(value) {
+  let result = String(value).toLowerCase();
+  if (result.length < 3) {
+    return result;
+  }
+  let firstCharacterWasLowerCaseY = false;
+  if (result.codePointAt(0) === 121) {
+    firstCharacterWasLowerCaseY = true;
+    result = "Y" + result.slice(1);
+  }
+  if (sfxSsesOrIes.test(result)) {
+    result = result.slice(0, -2);
+  } else if (sfxS.test(result)) {
+    result = result.slice(0, -1);
+  }
+  let match;
+  if (match = sfxEED.exec(result)) {
+    if (gt0.test(match[1])) {
+      result = result.slice(0, -1);
+    }
+  } else if ((match = sfxEdOrIng.exec(result)) && vowelInStem.test(match[1])) {
+    result = match[1];
+    if (sfxAtOrBlOrIz.test(result)) {
+      result += "e";
+    } else if (sfxMultiConsonantLike.test(result)) {
+      result = result.slice(0, -1);
+    } else if (consonantLike.test(result)) {
+      result += "e";
+    }
+  }
+  if ((match = sfxY.exec(result)) && vowelInStem.test(match[1])) {
+    result = match[1] + "i";
+  }
+  if ((match = step2.exec(result)) && gt0.test(match[1])) {
+    result = match[1] + step2list[match[2]];
+  }
+  if ((match = step3.exec(result)) && gt0.test(match[1])) {
+    result = match[1] + step3list[match[2]];
+  }
+  if (match = step4.exec(result)) {
+    if (gt1.test(match[1])) {
+      result = match[1];
+    }
+  } else if ((match = sfxIon.exec(result)) && gt1.test(match[1])) {
+    result = match[1];
+  }
+  if ((match = sfxE.exec(result)) && (gt1.test(match[1]) || eq1.test(match[1]) && !consonantLike.test(match[1]))) {
+    result = match[1];
+  }
+  if (sfxLl.test(result) && gt1.test(result)) {
+    result = result.slice(0, -1);
+  }
+  if (firstCharacterWasLowerCaseY) {
+    result = "y" + result.slice(1);
+  }
+  return result;
+}
+
 // src/lib/sparse.js
-var SPARSE_ALGORITHM_VERSION = "lexical-tf-hash-v1";
+var SPARSE_ALGORITHM_VERSION = "bm25-stem-hash-v1";
+var BM25 = { k1: 1.2, b: 0.75, avgdl: 100 };
 var SPARSE_DIM = 262144;
 var TOKEN_PATTERN = /[a-z0-9]+(?:[._:-][a-z0-9]+)*/g;
 var MIN_TOKEN_LEN = 2;
@@ -71162,7 +71278,7 @@ var STOPWORDS = /* @__PURE__ */ new Set([
 function tokenize(text) {
   const lower = String(text).toLowerCase();
   const matches = lower.match(TOKEN_PATTERN) || [];
-  return matches.filter((t) => t.length >= MIN_TOKEN_LEN && !STOPWORDS.has(t));
+  return matches.filter((t) => t.length >= MIN_TOKEN_LEN && !STOPWORDS.has(t)).map((t) => /^[a-z]+$/.test(t) ? stemmer(t) : t);
 }
 function fnv1a32(str) {
   let hash = 2166136261;
@@ -71175,19 +71291,33 @@ function fnv1a32(str) {
 function tokenIndex(token) {
   return fnv1a32(token) % SPARSE_DIM;
 }
-function sparseVector(text) {
-  const tokens = tokenize(text);
+function countTokens(tokens) {
   const counts = /* @__PURE__ */ new Map();
   for (const t of tokens) counts.set(t, (counts.get(t) || 0) + 1);
-  const weighted = /* @__PURE__ */ new Map();
-  for (const [token, count] of counts) {
+  return counts;
+}
+function toSparse(weightsByToken) {
+  const merged = /* @__PURE__ */ new Map();
+  for (const [token, w] of weightsByToken) {
     const idx = tokenIndex(token);
-    const weight = 1 + Math.log(count);
-    weighted.set(idx, (weighted.get(idx) || 0) + weight);
+    merged.set(idx, (merged.get(idx) || 0) + w);
   }
-  const indices = Array.from(weighted.keys()).sort((a, b) => a - b);
-  const values = indices.map((i) => weighted.get(i));
-  return { indices, values };
+  const indices = Array.from(merged.keys()).sort((a, b) => a - b);
+  return { indices, values: indices.map((i) => merged.get(i)) };
+}
+function sparseDocVector(text, { k1 = BM25.k1, b = BM25.b, avgdl = BM25.avgdl } = {}) {
+  const tokens = tokenize(text);
+  const dl2 = tokens.length;
+  const weights = /* @__PURE__ */ new Map();
+  for (const [token, tf2] of countTokens(tokens)) {
+    weights.set(token, tf2 * (k1 + 1) / (tf2 + k1 * (1 - b + b * dl2 / avgdl)));
+  }
+  return toSparse(weights);
+}
+function sparseQueryVector(text) {
+  const weights = /* @__PURE__ */ new Map();
+  for (const token of new Set(tokenize(text))) weights.set(token, 1);
+  return toSparse(weights);
 }
 
 // src/lib/timing.js
@@ -71270,7 +71400,7 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
   const points = pieces.map((chunk, i) => ({
     id: ids[i],
     dense: Array.from(denseVectors[i]),
-    sparse: sparseVector(chunk),
+    sparse: sparseDocVector(chunk),
     payload: {
       sourceKey,
       canonicalUrl,
@@ -71529,7 +71659,7 @@ function hitsPerSource(topK, sourceCount) {
 }
 async function retrieve({ client, collection, mode, filter, query, embed: embed2, topK = TOP_K_PER_QUERY, sourceCount = null, freshnessBoost = null }) {
   const [denseVec] = await embed2([query]);
-  const sparseVec = sparseVector(query);
+  const sparseVec = sparseQueryVector(query);
   const raw = await client.query(collection, {
     mode,
     dense: Array.from(denseVec),
@@ -71665,14 +71795,14 @@ Question: ${q}` }
 
 // src/lib/constants.js
 var LIBRARY_COLLECTION_PREFIX = "ask_my_tabs_library";
-function libraryCollectionName(modelKey) {
-  return `${LIBRARY_COLLECTION_PREFIX}__${modelKey}`;
+function libraryCollectionName(modelKey, sparseVersion) {
+  return sparseVersion ? `${LIBRARY_COLLECTION_PREFIX}__${modelKey}__${sparseVersion}` : `${LIBRARY_COLLECTION_PREFIX}__${modelKey}`;
 }
 var DEFAULT_RETRIEVAL_MODE = "hybrid";
 var DEFAULT_FRESHNESS_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1e3;
 
 // src/offscreen.js
-var LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key);
+var LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key, SPARSE_ALGORITHM_VERSION);
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {
   });

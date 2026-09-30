@@ -44,15 +44,21 @@ never by an absolute magnitude that assumes a particular scoring scale), and (c)
 LLM-based sufficiency judgment, which was already method-agnostic. Unit tests cover this directly
 under `tests/unit/sufficiency.test.js` for both cosine-like and RRF-like score distributions.
 
-## Sparse representation naming
+## Sparse representation: now BM25 (supersedes the earlier "not BM25" rule)
 
-Per the prompt's explicit instruction, the deterministic lexical sparse vector implemented in
-`src/lib/sparse.js` is **not** called BM25 anywhere in code, comments, docs, or the eval report.
-It is a hashed, IDF-free (until Milestone 3's optional idf pass, see that file's header comment),
-raw/log term-frequency sparse vector with a fixed tokenizer, stopword list, and FNV-1a-based
-feature hashing into a fixed-size sparse index space to keep it collision-documented and
-deterministic across runs/versions. It is described precisely (not as "BM25-lite" or similar) in
-`README.md`, `eval/PROTOCOL.md`, and code comments.
+The earlier hashed log-TF vector was deliberately not called BM25 because it lacked length
+normalization and k1 saturation. `src/lib/sparse.js` now implements Okapi BM25 and is called that:
+document vectors carry `tf*(k1+1)/(tf + k1*(1-b+b*dl/avgdl))` (k1=1.2, b=0.75), query vectors weigh
+each distinct term 1, and Qdrant's `modifier: "idf"` supplies IDF from live collection statistics
+(the split Qdrant documents for BM25). Tokens are Porter-stemmed unless they are identifiers.
+One approximation versus textbook BM25: `avgdl` is a fixed estimate (100 tokens per chunk), because a
+stored vector cannot follow the corpus average as pages come and go.
+
+Measured on the same SciFact harness (300 queries, 1000 docs, leaf-ir-q8): sparse-only nDCG@10
+0.750 -> 0.795, hybrid 0.818 -> 0.842. All four candidate embedders gained 0.010-0.028 hybrid.
+The sparse algorithm version is part of the collection name
+(`ask_my_tabs_library__<model>__bm25-stem-hash-v1`), so pages indexed under the old scoring must be
+re-added; the old collection is simply left unused.
 
 ## Durable identity
 

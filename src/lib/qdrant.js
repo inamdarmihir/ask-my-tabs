@@ -121,7 +121,7 @@ export function makeClient({ url = "http://127.0.0.1:6333", apiKey = "" } = {}) 
               [DENSE_VECTOR_NAME]: { size: denseSize, distance: "Cosine" },
             },
             // Qdrant applies IDF at query time from live collection statistics, turning the
-            // client's log-TF vectors (src/lib/sparse.js) into TF-IDF scoring without any
+            // client's BM25 term weights (src/lib/sparse.js) into full BM25 scoring without any
             // client-side corpus state.
             sparse_vectors: {
               [SPARSE_VECTOR_NAME]: { index: { on_disk: false }, modifier: "idf" },

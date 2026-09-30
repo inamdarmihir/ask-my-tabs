@@ -16,8 +16,9 @@ import { answerQuestion } from "./lib/agent.js";
 import { getConfig } from "./lib/config.js";
 import { libraryCollectionName, DEFAULT_RETRIEVAL_MODE } from "./lib/constants.js";
 import { EMBEDDING_MODEL } from "./lib/embedding-model.js";
+import { SPARSE_ALGORITHM_VERSION } from "./lib/sparse.js";
 
-const LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key);
+const LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key, SPARSE_ALGORITHM_VERSION);
 import { embedQuery } from "./lib/embeddings.js";
 
 function broadcast(message) {

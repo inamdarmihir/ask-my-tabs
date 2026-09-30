@@ -21,8 +21,8 @@ vector database and a language model that you choose.
   from. Out-of-range or invented citations are detected and flagged.
 - **Multi-hop retrieval.** The agent splits a comparative question into per-topic queries, checks
   whether the results are sufficient, and issues one refined follow-up search when they are not.
-- **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and a sparse lexical vector
-  with server-side IDF are fused with weighted Reciprocal Rank Fusion in a single Query API call.
+- **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2, b=0.75,
+  IDF computed by Qdrant from live collection statistics) are fused with weighted Reciprocal Rank Fusion in a single Query API call.
   Dense-only and sparse-only modes are available in settings.
 - **Source-diverse results.** Results are grouped by source, so one long page cannot crowd the
   other tabs out of an answer.
@@ -171,7 +171,7 @@ src/
     library.js           Indexing, snapshot replacement, source management
     embeddings.js        Dense embedding model wrapper (loads the bundled model)
     embedding-model.js   The one place that names the embedding model
-    sparse.js            Deterministic hashed sparse lexical vectors
+    sparse.js            BM25 sparse vectors (stemmed, hashed, Qdrant-side IDF)
     llm.js               On-device WebLLM wrapper
     llm-api.js           OpenAI, Groq, and Gemini clients
     config.js            Settings schema and storage
