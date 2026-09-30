@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { answerQuestion } from "../../src/lib/agent.js";
+import { answerQuestion, stripThinking, isOverviewQuestion } from "../../src/lib/agent.js";
 import { startTimer } from "../../src/lib/timing.js";
 
 // Minimal fakes: a Qdrant client returning canned hits, an LLM that records what it was asked, and
@@ -82,4 +82,18 @@ test("startTimer accumulates repeated stages and reports rounded ms", async () =
   await timer.time("a", async () => { t += 5; });
   await timer.time("b", async () => { t += 1; });
   assert.deepEqual(timer.summary(), { totalMs: 16, stages: { a: 15, b: 1 } });
+});
+
+test("stripThinking removes empty and unfinished think blocks", () => {
+  assert.equal(stripThinking("<think>\n\n</think>\n\nHello [1]"), "Hello [1]");
+  assert.equal(stripThinking("<think>\nstill going"), "");
+  assert.equal(stripThinking("plain"), "plain");
+});
+
+test("overview questions also search by source titles", async () => {
+  assert.equal(isOverviewQuestion("Tell me about the page, what do you see?"), true);
+  assert.equal(isOverviewQuestion("how does caching work"), false);
+  const { calls, args } = harness();
+  await answerQuestion("what do you see?", { ...args, sourceCount: 1, tabTitles: ["Hacker News"] }, noop, noop);
+  assert.equal(calls.queries, 2);
 });

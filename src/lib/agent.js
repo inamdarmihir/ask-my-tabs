@@ -74,6 +74,20 @@ export function needsPlanning(question) {
   return MULTI_PART.test(question || "");
 }
 
+// Qwen3 can emit an (empty) <think></think> block even with thinking disabled. Strip complete
+// blocks, and a still-open one while streaming, so it never reaches the user.
+export function stripThinking(text) {
+  return (text || "").replace(/<think>[\s\S]*?<\/think>\s*/g, "").replace(/<think>[\s\S]*$/, "").replace(/^\s+/, "");
+}
+
+// "Tell me about the page", "summarize this", "what do you see?": nothing in the wording matches
+// the page's content, so searching for the question retrieves noise. Search by the sources'
+// titles instead (in addition to the question) so their main content is what comes back.
+const OVERVIEW = /\b(about (the|this|these|my) (page|pages|tab|tabs|site|article)|summari[sz]e|summary|overview|what (is|are) (this|these)|what do you see|tl;?dr|key (points|takeaways)|main (points|ideas))\b/i;
+export function isOverviewQuestion(question) {
+  return OVERVIEW.test(question || "");
+}
+
 async function planQueries(chatJSON, question, tabTitles) {
   const raw = await chatJSON([
     {
@@ -170,6 +184,10 @@ export async function answerQuestion(
     queries = await timer.time("plan", () => planQueries(chatJSON, question, tabTitles));
   }
 
+  if (isOverviewQuestion(question) && tabTitles?.length) {
+    queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+  }
+
   onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
   // Queries are independent, so run them concurrently.
   const perQuery = await timer.time("retrieve", () =>
@@ -198,20 +216,23 @@ export async function answerQuestion(
     .map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`)
     .join("\n\n");
 
-  const answer = await timer.time("generate", () => chatStream(
+  const rawAnswer = await timer.time("generate", () => chatStream(
     [
       {
         role: "system",
         content:
-          "Answer the user's question using ONLY the numbered snippets provided. Cite snippets " +
+          "Answer the user's question using ONLY the numbered snippets provided. The snippets are the " +
+          'content of the page(s) the user is asking about, so "the page" or "this page" means them: ' +
+          "describe what they contain. Cite snippets " +
           'inline like [1] or [2] next to the claims they support. If the snippets don\'t fully ' +
           "answer the question, say what's missing instead of guessing. " +
           UNTRUSTED_CONTENT_NOTICE,
       },
       { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${question}` },
     ],
-    onToken,
+    (delta, full) => onToken(delta, stripThinking(full)),
   ));
+  const answer = stripThinking(rawAnswer);
 
   const citationValidation = validateCitations(answer, topHits.length);
 

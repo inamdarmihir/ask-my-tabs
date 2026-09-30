@@ -71326,6 +71326,13 @@ var MULTI_PART = /\b(compare|comparison|versus|vs\.?|difference|differences|diff
 function needsPlanning(question) {
   return MULTI_PART.test(question || "");
 }
+function stripThinking(text) {
+  return (text || "").replace(/<think>[\s\S]*?<\/think>\s*/g, "").replace(/<think>[\s\S]*$/, "").replace(/^\s+/, "");
+}
+var OVERVIEW = /\b(about (the|this|these|my) (page|pages|tab|tabs|site|article)|summari[sz]e|summary|overview|what (is|are) (this|these)|what do you see|tl;?dr|key (points|takeaways)|main (points|ideas))\b/i;
+function isOverviewQuestion(question) {
+  return OVERVIEW.test(question || "");
+}
 async function planQueries(chatJSON2, question, tabTitles) {
   const raw = await chatJSON2([
     {
@@ -71399,6 +71406,9 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
     onStatus("Planning search queries...");
     queries = await timer.time("plan", () => planQueries(chatJSON2, question, tabTitles));
   }
+  if (isOverviewQuestion(question) && tabTitles?.length) {
+    queries = [...queries, [...new Set(tabTitles)].slice(0, 5).join(" ")];
+  }
   onStatus(queries.length > 1 ? `Searching ${queries.length} queries...` : `Searching for "${queries[0]}"...`);
   const perQuery = await timer.time(
     "retrieve",
@@ -71415,19 +71425,20 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
   }
   onStatus("Writing an answer...");
   const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}") ${h.text}`).join("\n\n");
-  const answer = await timer.time("generate", () => chatStream2(
+  const rawAnswer = await timer.time("generate", () => chatStream2(
     [
       {
         role: "system",
-        content: "Answer the user's question using ONLY the numbered snippets provided. Cite snippets inline like [1] or [2] next to the claims they support. If the snippets don't fully answer the question, say what's missing instead of guessing. " + UNTRUSTED_CONTENT_NOTICE
+        content: `Answer the user's question using ONLY the numbered snippets provided. The snippets are the content of the page(s) the user is asking about, so "the page" or "this page" means them: describe what they contain. Cite snippets inline like [1] or [2] next to the claims they support. If the snippets don't fully answer the question, say what's missing instead of guessing. ` + UNTRUSTED_CONTENT_NOTICE
       },
       { role: "user", content: `Snippets:
 ${contextBlock}
 
 Question: ${question}` }
     ],
-    onToken
+    (delta, full) => onToken(delta, stripThinking(full))
   ));
+  const answer = stripThinking(rawAnswer);
   const citationValidation = validateCitations(answer, topHits.length);
   return {
     answer,
