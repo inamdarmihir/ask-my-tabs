@@ -124,6 +124,9 @@ async function hashText(text) {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// src/background.js
+init_config();
+
 // src/lib/freshness.js
 async function checkLiveFreshness({ storedContentHash, currentText, hashText: hashText2 }) {
   const currentHash = await hashText2(currentText);
@@ -144,10 +147,10 @@ function titleFrom(question) {
 function sortAndPrune(list) {
   return [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_THREADS);
 }
-function startTurn(list, { threadId, question, scope, now, newId }) {
+function startTurn(list, { threadId, question, scope, now, newId, model = null }) {
   const messageId = newId();
   const user = { id: newId(), role: "user", content: question, createdAt: now, scope };
-  const assistant = { id: messageId, role: "assistant", content: "", createdAt: now, status: "pending", statusText: "Starting...", startedAt: now };
+  const assistant = { id: messageId, role: "assistant", content: "", createdAt: now, status: "pending", statusText: "Starting...", startedAt: now, model };
   const existing = list.find((t) => t.id === threadId);
   const thread = existing ? { ...existing, updatedAt: now, messages: [...existing.messages, user, assistant] } : { id: newId(), title: titleFrom(question), createdAt: now, updatedAt: now, messages: [user, assistant] };
   const rest = list.filter((t) => t.id !== thread.id);
@@ -391,13 +394,17 @@ function handleAnswerEvent(event) {
 async function sendQuestion(message) {
   if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
   let ids;
+  const cfg = await getConfig();
+  const provider = ALL_API_PROVIDERS[cfg.llmProvider];
+  const model = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : "On-device (Qwen3-0.6B)";
   await mutateThreads((list) => {
     const turn = startTurn(list, {
       threadId: message.threadId,
       question: message.question,
       scope: message.scope,
       now: Date.now(),
-      newId: () => crypto.randomUUID()
+      newId: () => crypto.randomUUID(),
+      model
     });
     ids = turn;
     return turn.list;

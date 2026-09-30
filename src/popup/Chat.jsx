@@ -99,12 +99,16 @@ function AssistantMessage({ message, workingSet, now }) {
       {status === "error" && <div className="error-box">{stale ? INTERRUPTED_MESSAGE : message.error}</div>}
       {message.invalidCitations?.length > 0 && (
         <div className="warn-box">
-          The answer cites [{message.invalidCitations.join(", ")}], which {message.invalidCitations.length === 1 ? "doesn't" : "don't"} match any supplied snippet. Treat that claim as unsupported.
+          {message.invalidCitations.length > 4
+            ? `${message.invalidCitations.length} citations in this answer (up to [${Math.max(...message.invalidCitations)}]) don't match any supplied snippet.`
+            : `The answer cites [${message.invalidCitations.join(", ")}], which ${message.invalidCitations.length === 1 ? "doesn't" : "don't"} match any supplied snippet.`}{" "}
+          Treat those claims as unsupported.
         </div>
       )}
       {status === "done" && (
         <div className="msg-footer">
           <span className="timing">
+            {message.model ? `${message.model} · ` : ""}
             {t ? `${formatMs(t.totalMs)}${t.snippets ? ` · ${t.snippets} snippets · ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}` : ""}
           </span>
           <button className="icon-btn small" onClick={copy} title="Copy answer">{copied ? <CheckIcon /> : <CopyIcon />}</button>

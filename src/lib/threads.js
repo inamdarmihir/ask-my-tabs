@@ -22,10 +22,10 @@ function sortAndPrune(list) {
 
 // Appends a user message plus a pending assistant message. Creates the thread when `threadId`
 // is missing or unknown. Returns the new list and the ids the caller needs to route events.
-export function startTurn(list, { threadId, question, scope, now, newId }) {
+export function startTurn(list, { threadId, question, scope, now, newId, model = null }) {
   const messageId = newId();
   const user = { id: newId(), role: "user", content: question, createdAt: now, scope };
-  const assistant = { id: messageId, role: "assistant", content: "", createdAt: now, status: "pending", statusText: "Starting...", startedAt: now };
+  const assistant = { id: messageId, role: "assistant", content: "", createdAt: now, status: "pending", statusText: "Starting...", startedAt: now, model };
   const existing = list.find((t) => t.id === threadId);
   const thread = existing
     ? { ...existing, updatedAt: now, messages: [...existing.messages, user, assistant] }

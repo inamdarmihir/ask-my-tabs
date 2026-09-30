@@ -14961,14 +14961,15 @@ function AssistantMessage({ message, workingSet, now }) {
     status === "pending" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Pending, { message, now }),
     status === "error" && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "error-box", children: stale ? INTERRUPTED_MESSAGE : message.error }),
     message.invalidCitations?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "warn-box", children: [
-      "The answer cites [",
-      message.invalidCitations.join(", "),
-      "], which ",
-      message.invalidCitations.length === 1 ? "doesn't" : "don't",
-      " match any supplied snippet. Treat that claim as unsupported."
+      message.invalidCitations.length > 4 ? `${message.invalidCitations.length} citations in this answer (up to [${Math.max(...message.invalidCitations)}]) don't match any supplied snippet.` : `The answer cites [${message.invalidCitations.join(", ")}], which ${message.invalidCitations.length === 1 ? "doesn't" : "don't"} match any supplied snippet.`,
+      " ",
+      "Treat those claims as unsupported."
     ] }),
     status === "done" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "msg-footer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "timing", children: t ? `${formatMs(t.totalMs)}${t.snippets ? ` \xB7 ${t.snippets} snippets \xB7 ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}` : "" }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "timing", children: [
+        message.model ? `${message.model} \xB7 ` : "",
+        t ? `${formatMs(t.totalMs)}${t.snippets ? ` \xB7 ${t.snippets} snippets \xB7 ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}` : ""
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { className: "icon-btn small", onClick: copy, title: "Copy answer", children: copied ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CheckIcon, {}) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(CopyIcon, {}) })
     ] }),
     citations.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "sources", children: [

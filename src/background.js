@@ -8,6 +8,7 @@
 
 import { canonicalizeUrl } from "./lib/ids.js";
 import { hashText } from "./lib/chunk.js";
+import { getConfig, ALL_API_PROVIDERS } from "./lib/config.js";
 import { checkLiveFreshness } from "./lib/freshness.js";
 import {
   THREADS_KEY, ACTIVE_THREAD_KEY, startTurn, patchMessage, deleteThread, eventToPatch, sweepInterrupted, hasPending,
@@ -237,6 +238,9 @@ function handleAnswerEvent(event) {
 async function sendQuestion(message) {
   if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
   let ids;
+  const cfg = await getConfig();
+  const provider = ALL_API_PROVIDERS[cfg.llmProvider];
+  const model = provider ? `${provider.label} ${cfg.llmModel || provider.defaultModel}` : "On-device (Qwen3-0.6B)";
   await mutateThreads((list) => {
     const turn = startTurn(list, {
       threadId: message.threadId,
@@ -244,6 +248,7 @@ async function sendQuestion(message) {
       scope: message.scope,
       now: Date.now(),
       newId: () => crypto.randomUUID(),
+      model,
     });
     ids = turn;
     return turn.list;
