@@ -12,7 +12,7 @@
 
 import { sparseVector } from "./sparse.js";
 import { startTimer } from "./timing.js";
-import { selectReadingChunks, answerSystemPrompt, historyMessages } from "./reading.js";
+import { selectReadingChunks, latestSnapshot, answerSystemPrompt, historyMessages } from "./reading.js";
 
 const TOP_K_PER_QUERY = 5;
 const FINAL_TOP_K = 8;
@@ -205,7 +205,7 @@ export async function retrieve({ client, collection, mode, filter, query, embed,
 
 export async function answerQuestion(
   question,
-  { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed, chatJSON, chatStream, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 24000 : 5000 },
+  { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed, chatJSON, chatStream, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 48000 : 5000 },
   onStatus,
   onToken,
 ) {
@@ -232,14 +232,21 @@ export async function answerQuestion(
   // 2. Gather. Summaries read the page(s) in order; everything else searches.
   let topHits = [];
   let mode_ = "search";
-  const canRead = intent === "summarize" && sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
-  if (canRead) {
+  // Read mode = the page(s) in order, no similarity search. Summaries always use it. For a capable
+  // model it is also used for ANY question whenever everything in scope fits the budget: handing the
+  // model the whole page beats guessing which few chunks matter, and is what a chat assistant does
+  // when you paste a page. Larger scopes fall back to search (summaries take the first budget's worth).
+  const readable = sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
+  if (readable && (intent === "summarize" || capable)) {
     onStatus("Reading your pages...");
     const points = await timer.time("read", () => client.scrollAll(collection, { filter, withPayload: true }));
-    topHits = selectReadingChunks(points, readBudgetChars);
-    if (topHits.length) {
-      mode_ = "read";
-      onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+    const total = latestSnapshot(points).reduce((n, p) => n + p.payload.text.length, 0);
+    if (intent === "summarize" || total <= readBudgetChars) {
+      topHits = selectReadingChunks(points, readBudgetChars);
+      if (topHits.length) {
+        mode_ = "read";
+        onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+      }
     }
   }
   if (mode_ === "search") {
@@ -266,16 +273,35 @@ export async function answerQuestion(
 
   // 3. Write.
   onStatus("Writing an answer...");
-  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}) ${h.text}`).join("\n\n");
-  const rawAnswer = await timer.time("generate", () => chatStream(
-    [
-      { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE) },
-      ...historyMessages(history),
-      { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${q}` },
-    ],
-    (delta, full) => onToken(delta, stripThinking(full)),
-  ));
-  const answer = stripThinking(rawAnswer);
+  const feed = topHits.some((h) => h.payload?.pageKind === "feed");
+  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}${h.payload?.pageKind === "feed" ? ", list/feed page" : ""}) ${h.text}`).join("\n\n");
+  const messages = [
+    { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE, { feed }) },
+    ...historyMessages(history),
+    { role: "user", content: `Snippets:\n${contextBlock}\n\nQuestion: ${q}` },
+  ];
+  const clean = (delta, full) => onToken(delta, stripThinking(full));
+  let answer = stripThinking(await timer.time("generate", () => chatStream(messages, clean)));
+
+  // 4. Verify (capable models only: a second pass is affordable there and pointless on a 0.6B
+  //    model). An answer with citations outside [1..N], or none at all, is rewritten once.
+  if (capable) {
+    const check = validateCitations(answer, topHits.length);
+    if (check.invalid.length > 0 || check.citedCount === 0) {
+      onStatus("Checking citations...");
+      const problem = check.invalid.length
+        ? `You cited [${check.invalid.join(", ")}], which don't exist. Valid citations are [1] to [${topHits.length}].`
+        : "Your answer has no citations.";
+      answer = stripThinking(
+        await timer.time("verify", () =>
+          chatStream(
+            [...messages, { role: "assistant", content: answer }, { role: "user", content: `${problem} Rewrite the answer: keep the same structure and content, cite each claim with the correct snippet number, and drop any claim the snippets don't support.` }],
+            clean,
+          ),
+        ),
+      );
+    }
+  }
 
   const citationValidation = validateCitations(answer, topHits.length);
 

@@ -70986,6 +70986,34 @@ function chunkText(text, { chunkWords = 180, overlapWords = 30 } = {}) {
   }
   return chunks;
 }
+function chunkStructured(text, { maxChars = 1200, overlapLines = 2, minBeforeHeading = 400 } = {}) {
+  const lines = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.length <= maxChars) lines.push(line);
+    else lines.push(...chunkText(line, { chunkWords: 150, overlapWords: 0 }));
+  }
+  const chunks = [];
+  let cur = [];
+  let size = 0;
+  const flush = () => {
+    if (cur.length) chunks.push(cur.join("\n"));
+  };
+  for (const line of lines) {
+    const isHeading = line.startsWith("## ");
+    if (cur.length && (size + line.length + 1 > maxChars || isHeading && size >= minBeforeHeading)) {
+      flush();
+      const carry = isHeading ? [] : cur.slice(-overlapLines);
+      cur = carry;
+      size = carry.reduce((n, l) => n + l.length + 1, 0);
+    }
+    cur.push(line);
+    size += line.length + 1;
+  }
+  if (cur.length && (chunks.length === 0 || cur.some((l) => !chunks[chunks.length - 1].includes(l)))) flush();
+  return chunks;
+}
 async function hashText(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -71180,7 +71208,7 @@ var IndexingError = class extends Error {
     this.cause = cause;
   }
 };
-async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed: embed2, observedTabId, observedSessionId, corpusMode = "library", onProgress }) {
+async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed: embed2, observedTabId, observedSessionId, corpusMode = "library", pageKind = null, onProgress }) {
   const timer = startTimer();
   const canonicalUrl = canonicalizeUrl(rawUrl);
   const domain = domainOf(canonicalUrl);
@@ -71207,7 +71235,7 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
     }
     return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash, timings: timer.summary() };
   }
-  const pieces = chunkText(text);
+  const pieces = text.includes("\n") ? chunkStructured(text) : chunkText(text);
   if (pieces.length === 0) {
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
@@ -71240,6 +71268,7 @@ async function indexSource(client, collection, { canonicalUrl: rawUrl, title, te
       contentHash,
       chunkIndex: i,
       chunkCount: pieces.length,
+      pageKind,
       text: chunk,
       observedTabId: observedTabId ?? null,
       observedSessionId: observedSessionId ?? null,
@@ -71365,8 +71394,9 @@ var BY_INTENT = {
   compare: "You are a careful analyst comparing sources. Give a one-sentence verdict first, then one short bullet group per thing compared, then a line on the key difference. ",
   lookup: "You are a precise research assistant. Answer directly in the first sentence, then add only the supporting detail that matters, as short paragraphs or bullets. "
 };
-function answerSystemPrompt(intent, count, untrustedNotice) {
-  return `${BY_INTENT[intent] || BY_INTENT.lookup}${COMMON}Valid citations are [1] to [${count}]. ${untrustedNotice}`;
+var FEED_HINT = "The page is a feed/list of items: each item is a title, its source domain, then points/comments/age. Judge items by title and discussion size, and say when a judgment is inferred from a title alone. ";
+function answerSystemPrompt(intent, count, untrustedNotice, { feed = false } = {}) {
+  return `${BY_INTENT[intent] || BY_INTENT.lookup}${feed ? FEED_HINT : ""}${COMMON}Valid citations are [1] to [${count}]. ${untrustedNotice}`;
 }
 function historyMessages(history, maxTurns = 3, maxAnswerChars = 600) {
   return (history || []).slice(-maxTurns).flatMap((h) => [
@@ -71516,7 +71546,7 @@ async function retrieve({ client, collection, mode, filter, query, embed: embed2
   }
   return hits;
 }
-async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 24e3 : 5e3 }, onStatus, onToken) {
+async function answerQuestion(question, { client, collection, mode = "hybrid", filter, tabTitles, sourceCount = null, embed: embed2, chatJSON: chatJSON2, chatStream: chatStream2, freshnessBoost = null, history = [], capable = false, readBudgetChars = capable ? 48e3 : 5e3 }, onStatus, onToken) {
   const timer = startTimer();
   let intent = classifyIntent(question);
   let q = question;
@@ -71534,14 +71564,17 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
   }
   let topHits = [];
   let mode_ = "search";
-  const canRead = intent === "summarize" && sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
-  if (canRead) {
+  const readable = sourceCount !== null && sourceCount <= 6 && typeof client.scrollAll === "function";
+  if (readable && (intent === "summarize" || capable)) {
     onStatus("Reading your pages...");
     const points = await timer.time("read", () => client.scrollAll(collection, { filter, withPayload: true }));
-    topHits = selectReadingChunks(points, readBudgetChars);
-    if (topHits.length) {
-      mode_ = "read";
-      onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+    const total = latestSnapshot(points).reduce((n, p) => n + p.payload.text.length, 0);
+    if (intent === "summarize" || total <= readBudgetChars) {
+      topHits = selectReadingChunks(points, readBudgetChars);
+      if (topHits.length) {
+        mode_ = "read";
+        onStatus(`Read ${topHits.length} section${topHits.length === 1 ? "" : "s"} from ${new Set(topHits.map((h) => h.sourceKey)).size} page(s)`);
+      }
     }
   }
   if (mode_ === "search") {
@@ -71562,19 +71595,34 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
     return { answer: msg, citations: [], abstained: true, citationValidation: { valid: [], invalid: [], citedCount: 0 }, timings: timer.summary() };
   }
   onStatus("Writing an answer...");
-  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}) ${h.text}`).join("\n\n");
-  const rawAnswer = await timer.time("generate", () => chatStream2(
-    [
-      { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE) },
-      ...historyMessages(history),
-      { role: "user", content: `Snippets:
+  const feed = topHits.some((h) => h.payload?.pageKind === "feed");
+  const contextBlock = topHits.map((h, i) => `[${i + 1}] (from "${h.tabTitle}", ${h.domain}${h.payload?.pageKind === "feed" ? ", list/feed page" : ""}) ${h.text}`).join("\n\n");
+  const messages = [
+    { role: "system", content: answerSystemPrompt(intent, topHits.length, UNTRUSTED_CONTENT_NOTICE, { feed }) },
+    ...historyMessages(history),
+    { role: "user", content: `Snippets:
 ${contextBlock}
 
 Question: ${q}` }
-    ],
-    (delta, full) => onToken(delta, stripThinking(full))
-  ));
-  const answer = stripThinking(rawAnswer);
+  ];
+  const clean = (delta, full) => onToken(delta, stripThinking(full));
+  let answer = stripThinking(await timer.time("generate", () => chatStream2(messages, clean)));
+  if (capable) {
+    const check = validateCitations(answer, topHits.length);
+    if (check.invalid.length > 0 || check.citedCount === 0) {
+      onStatus("Checking citations...");
+      const problem = check.invalid.length ? `You cited [${check.invalid.join(", ")}], which don't exist. Valid citations are [1] to [${topHits.length}].` : "Your answer has no citations.";
+      answer = stripThinking(
+        await timer.time(
+          "verify",
+          () => chatStream2(
+            [...messages, { role: "assistant", content: answer }, { role: "user", content: `${problem} Rewrite the answer: keep the same structure and content, cite each claim with the correct snippet number, and drop any claim the snippets don't support.` }],
+            clean
+          )
+        )
+      );
+    }
+  }
   const citationValidation = validateCitations(answer, topHits.length);
   return {
     answer,
@@ -71732,6 +71780,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           title: message.title,
           text: message.text,
           embed,
+          pageKind: message.pageKind,
           observedTabId: message.tabId,
           observedSessionId: message.sessionId,
           onProgress: (p) => broadcast({ type: "INDEX_PROGRESS", tabId: message.tabId, ...p })

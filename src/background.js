@@ -95,11 +95,86 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // Runs inside the target page. Must be self-contained: no references to outer-scope
 // variables, since chrome.scripting serializes this function and executes it in the page.
+//
+// Keeps the page's STRUCTURE (one line per block/table row, "## " headings, "- " list items) instead
+// of flattening everything to one line: which words are a headline, which are its points and comment
+// count, and where one item ends are exactly what a model needs to summarize a feed like Hacker News.
 function extractPageText() {
-  const clone = document.body.cloneNode(true);
-  clone.querySelectorAll("script, style, nav, header, footer, aside, noscript, svg, iframe").forEach((el) => el.remove());
-  const text = (clone.innerText || "").replace(/\s+/g, " ").trim();
-  return { title: document.title, text };
+  const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "SVG", "IFRAME", "NAV", "FOOTER", "ASIDE", "TEMPLATE", "CANVAS", "FORM", "BUTTON", "SELECT", "INPUT", "TEXTAREA"]);
+  const BLOCK = new Set(["P", "DIV", "SECTION", "ARTICLE", "MAIN", "UL", "OL", "TR", "TABLE", "BLOCKQUOTE", "PRE", "DT", "DD", "FIGURE", "FIGCAPTION", "DETAILS", "SUMMARY", "HEADER"]);
+  const MAX_CHARS = 250000;
+
+  const bodyLen = (document.body.innerText || "").length;
+  const main = document.querySelector("main, article, [role=main]");
+  const root = main && (main.innerText || "").length > bodyLen * 0.4 ? main : document.body;
+
+  const out = [];
+  let size = 0;
+  let linkChars = 0;
+  const push = (t) => {
+    out.push(t);
+    size += t.length;
+  };
+
+  function walk(node) {
+    if (size > MAX_CHARS) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node.nodeValue.replace(/\s+/g, " ");
+      if (t.trim()) {
+        push(t);
+        if (node.parentElement && node.parentElement.closest("a")) linkChars += t.length;
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName;
+    if (SKIP.has(tag)) return;
+    if (tag === "HEADER" && !node.closest("article")) return; // site chrome, not content
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return;
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return;
+
+    if (/^H[1-6]$/.test(tag)) {
+      push("\n\n## ");
+      node.childNodes.forEach(walk);
+      push("\n\n");
+    } else if (tag === "LI") {
+      push("\n- ");
+      node.childNodes.forEach(walk);
+      push("\n");
+    } else if (tag === "BR") {
+      push("\n");
+    } else if (tag === "TD" || tag === "TH" || tag === "A" || tag === "SPAN" || tag === "B" || tag === "I" || tag === "EM" || tag === "STRONG" || tag === "SMALL") {
+      // Inline boundary: keep neighbours apart ("bryan0" + "5 hours ago" must not fuse).
+      push(" ");
+      node.childNodes.forEach(walk);
+      push(" ");
+    } else if (BLOCK.has(tag)) {
+      push("\n");
+      node.childNodes.forEach(walk);
+      push("\n");
+    } else {
+      node.childNodes.forEach(walk);
+    }
+  }
+  walk(root);
+
+  const text = out
+    .join("")
+    .split("\n")
+    .map((l) => l.replace(/[ \t\u00a0]+/g, " ").trim())
+    .filter(Boolean) // one line per block; structure comes from the lines and "## " headings
+    .join("\n")
+    .replace(/ +([,.;:!?)\]])/g, "$1")
+    .replace(/([(\[]) +/g, "$1")
+    .replace(/^(\d{1,3}\.)\n(?=\S)/gm, "$1 ") // list rank on its own line -> same line as its title
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // "feed" = a list of many short, link-heavy items (Hacker News, Reddit, search results).
+  const lines = text.split("\n").filter(Boolean);
+  const kind = lines.length >= 25 && linkChars / Math.max(text.length, 1) > 0.3 && text.length / lines.length < 140 ? "feed" : "article";
+  return { title: document.title, text, kind };
 }
 
 async function extractTabText(tabId) {
@@ -147,6 +222,7 @@ async function indexTab(tabId) {
     title: extraction.title,
     url: tab.url,
     text: extraction.text,
+    pageKind: extraction.kind,
   });
   if (!result?.ok) {
     if (result?.qdrant?.kind === "down") throw new Error(result.qdrant.message);
@@ -463,8 +539,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-chrome.runtime.onInstalled.addListener((details) => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   sweepPendingThreads().catch(() => {});
+  // An extension reload/update keeps an already-open offscreen document, which then keeps running
+  // the OLD bundle (old agent, old prompts). Close it so the new code is what actually runs.
+  if (details.reason !== "install" && (await hasOffscreenDocument())) {
+    await chrome.offscreen.closeDocument().catch(() => {});
+  }
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
   // Open onboarding only on a genuine first install, never on extension updates.
   if (details.reason === "install") {

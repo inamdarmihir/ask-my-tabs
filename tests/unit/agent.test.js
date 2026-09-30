@@ -131,3 +131,41 @@ test("capable models plan once, rewrite follow-ups, and receive history", async 
   assert.ok(messages.some((m) => m.role === "assistant" && m.content.includes("Beta is a thing")));
   assert.ok(messages[messages.length - 1].content.includes("What is beta's price?"));
 });
+
+test("capable model reads the whole page for a lookup question when it fits, no similarity search", async () => {
+  const { calls, args } = harness();
+  args.client.scrollAll = async () => [pt("a", 0, "alpha costs 5"), pt("a", 1, "beta costs 9")];
+  args.chatJSON = async () => JSON.stringify({ intent: "lookup", question: "what does beta cost", queries: ["beta cost"] });
+  args.chatStream = async (m, onToken) => { onToken("Beta costs 9 [2].", "Beta costs 9 [2]."); return "Beta costs 9 [2]."; };
+  const res = await answerQuestion("what does beta cost", { ...args, sourceCount: 1, capable: true, tabTitles: ["A"] }, noop, noop);
+  assert.equal(calls.queries, 0);
+  assert.equal(res.timings.mode, "read");
+  assert.equal(res.citations.length, 2);
+});
+
+test("capable model rewrites once when the answer cites nonexistent snippets", async () => {
+  const { args } = harness();
+  args.client.scrollAll = async () => [pt("a", 0, "alpha"), pt("a", 1, "beta")];
+  args.chatJSON = async () => JSON.stringify({ intent: "summarize", question: "sum", queries: ["sum"] });
+  let calls = 0;
+  args.chatStream = async (m, onToken) => {
+    calls += 1;
+    const t = calls === 1 ? "Things [7] [8]." : "Things [1] [2].";
+    onToken(t, t);
+    return t;
+  };
+  const statuses = [];
+  const res = await answerQuestion("summarize", { ...args, sourceCount: 1, capable: true, tabTitles: ["A"] }, (s) => statuses.push(s), noop);
+  assert.equal(calls, 2);
+  assert.equal(res.answer, "Things [1] [2].");
+  assert.deepEqual(res.citationValidation.invalid, []);
+  assert.ok(statuses.includes("Checking citations..."));
+});
+
+test("on-device model never gets the verify pass", async () => {
+  const { args } = harness();
+  let calls = 0;
+  args.chatStream = async (m, onToken) => { calls += 1; onToken("no cites", "no cites"); return "no cites"; };
+  await answerQuestion("how does caching work", { ...args, sourceCount: null }, noop, noop);
+  assert.equal(calls, 1);
+});

@@ -279,10 +279,63 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   })().catch((err) => console.error("[background] purge on navigate failed:", err));
 });
 function extractPageText() {
-  const clone = document.body.cloneNode(true);
-  clone.querySelectorAll("script, style, nav, header, footer, aside, noscript, svg, iframe").forEach((el) => el.remove());
-  const text = (clone.innerText || "").replace(/\s+/g, " ").trim();
-  return { title: document.title, text };
+  const SKIP = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "NOSCRIPT", "SVG", "IFRAME", "NAV", "FOOTER", "ASIDE", "TEMPLATE", "CANVAS", "FORM", "BUTTON", "SELECT", "INPUT", "TEXTAREA"]);
+  const BLOCK = /* @__PURE__ */ new Set(["P", "DIV", "SECTION", "ARTICLE", "MAIN", "UL", "OL", "TR", "TABLE", "BLOCKQUOTE", "PRE", "DT", "DD", "FIGURE", "FIGCAPTION", "DETAILS", "SUMMARY", "HEADER"]);
+  const MAX_CHARS = 25e4;
+  const bodyLen = (document.body.innerText || "").length;
+  const main = document.querySelector("main, article, [role=main]");
+  const root = main && (main.innerText || "").length > bodyLen * 0.4 ? main : document.body;
+  const out = [];
+  let size = 0;
+  let linkChars = 0;
+  const push = (t) => {
+    out.push(t);
+    size += t.length;
+  };
+  function walk(node) {
+    if (size > MAX_CHARS) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node.nodeValue.replace(/\s+/g, " ");
+      if (t.trim()) {
+        push(t);
+        if (node.parentElement && node.parentElement.closest("a")) linkChars += t.length;
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName;
+    if (SKIP.has(tag)) return;
+    if (tag === "HEADER" && !node.closest("article")) return;
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return;
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return;
+    if (/^H[1-6]$/.test(tag)) {
+      push("\n\n## ");
+      node.childNodes.forEach(walk);
+      push("\n\n");
+    } else if (tag === "LI") {
+      push("\n- ");
+      node.childNodes.forEach(walk);
+      push("\n");
+    } else if (tag === "BR") {
+      push("\n");
+    } else if (tag === "TD" || tag === "TH" || tag === "A" || tag === "SPAN" || tag === "B" || tag === "I" || tag === "EM" || tag === "STRONG" || tag === "SMALL") {
+      push(" ");
+      node.childNodes.forEach(walk);
+      push(" ");
+    } else if (BLOCK.has(tag)) {
+      push("\n");
+      node.childNodes.forEach(walk);
+      push("\n");
+    } else {
+      node.childNodes.forEach(walk);
+    }
+  }
+  walk(root);
+  const text = out.join("").split("\n").map((l) => l.replace(/[ \t\u00a0]+/g, " ").trim()).filter(Boolean).join("\n").replace(/ +([,.;:!?)\]])/g, "$1").replace(/([(\[]) +/g, "$1").replace(/^(\d{1,3}\.)\n(?=\S)/gm, "$1 ").replace(/\n{3,}/g, "\n\n").trim();
+  const lines = text.split("\n").filter(Boolean);
+  const kind = lines.length >= 25 && linkChars / Math.max(text.length, 1) > 0.3 && text.length / lines.length < 140 ? "feed" : "article";
+  return { title: document.title, text, kind };
 }
 async function extractTabText(tabId) {
   const [{ result }] = await chrome.scripting.executeScript({
@@ -321,7 +374,8 @@ async function indexTab(tabId) {
     sessionId,
     title: extraction.title,
     url: tab.url,
-    text: extraction.text
+    text: extraction.text,
+    pageKind: extraction.kind
   });
   if (!result?.ok) {
     if (result?.qdrant?.kind === "down") throw new Error(result.qdrant.message);
@@ -580,9 +634,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
-chrome.runtime.onInstalled.addListener((details) => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   sweepPendingThreads().catch(() => {
   });
+  if (details.reason !== "install" && await hasOffscreenDocument()) {
+    await chrome.offscreen.closeDocument().catch(() => {
+    });
+  }
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
   if (details.reason === "install") {
     chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html") }).catch(() => {

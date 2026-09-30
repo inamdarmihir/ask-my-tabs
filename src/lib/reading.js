@@ -72,8 +72,12 @@ const BY_INTENT = {
     "supporting detail that matters, as short paragraphs or bullets. ",
 };
 
-export function answerSystemPrompt(intent, count, untrustedNotice) {
-  return `${BY_INTENT[intent] || BY_INTENT.lookup}${COMMON}Valid citations are [1] to [${count}]. ${untrustedNotice}`;
+const FEED_HINT =
+  "The page is a feed/list of items: each item is a title, its source domain, then points/comments/age. " +
+  "Judge items by title and discussion size, and say when a judgment is inferred from a title alone. ";
+
+export function answerSystemPrompt(intent, count, untrustedNotice, { feed = false } = {}) {
+  return `${BY_INTENT[intent] || BY_INTENT.lookup}${feed ? FEED_HINT : ""}${COMMON}Valid citations are [1] to [${count}]. ${untrustedNotice}`;
 }
 
 export function historyMessages(history, maxTurns = 3, maxAnswerChars = 600) {

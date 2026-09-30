@@ -33,3 +33,24 @@ test("hashText is deterministic and content-sensitive", async () => {
   assert.notEqual(h1, h3);
   assert.match(h1, /^[0-9a-f]{64}$/);
 });
+
+import { chunkStructured } from "../../src/lib/chunk.js";
+
+test("chunkStructured never cuts a line and keeps items whole", () => {
+  const items = Array.from({ length: 40 }, (_, i) => `${i + 1}. Headline number ${i + 1} about something (site${i}.com)\n${i * 3} points by user${i} ${i} hours ago | ${i} comments`).join("\n");
+  const chunks = chunkStructured(items, { maxChars: 400 });
+  assert.ok(chunks.length > 3);
+  for (const c of chunks) {
+    assert.ok(c.length <= 400 + 120, "chunk within budget (overlap allowed)");
+    for (const line of c.split("\n")) assert.ok(items.includes(line), "no line is cut");
+  }
+  assert.ok(chunks.join("\n").includes("40. Headline number 40"));
+});
+
+test("chunkStructured starts a new chunk at a heading and splits an overlong line by words", () => {
+  const text = `## One\n${"a ".repeat(150).trim()}\n## Two\nbody`;
+  const chunks = chunkStructured(text, { maxChars: 1200, minBeforeHeading: 100 });
+  assert.ok(chunks.some((c) => c.startsWith("## Two")));
+  const long = chunkStructured("x ".repeat(2000).trim(), { maxChars: 500 });
+  assert.ok(long.length > 1);
+});

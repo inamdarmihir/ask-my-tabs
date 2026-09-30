@@ -3,7 +3,7 @@
 // function -- no chrome.* APIs -- so it runs identically in the extension's offscreen document
 // and in the Node eval harness.
 
-import { chunkText, hashText } from "./chunk.js";
+import { chunkText, chunkStructured, hashText } from "./chunk.js";
 import { canonicalizeUrl, domainOf, sourceKeyFor, chunkPointId } from "./ids.js";
 import { sparseVector, SPARSE_ALGORITHM_VERSION } from "./sparse.js";
 import { startTimer } from "./timing.js";
@@ -33,7 +33,7 @@ export class IndexingError extends Error {
 // than silently swallowing it; the leftover old chunks are still tagged with their own
 // (superseded) contentHash, and a repair pass is just calling indexSource again, which is
 // idempotent and will retry the delete with the same deterministic point IDs.
-export async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed, observedTabId, observedSessionId, corpusMode = "library", onProgress }) {
+export async function indexSource(client, collection, { canonicalUrl: rawUrl, title, text, embed, observedTabId, observedSessionId, corpusMode = "library", pageKind = null, onProgress }) {
   const timer = startTimer();
   const canonicalUrl = canonicalizeUrl(rawUrl);
   const domain = domainOf(canonicalUrl);
@@ -78,7 +78,8 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
     return { skipped: true, reason: "unchanged since last indexed", sourceKey, contentHash, timings: timer.summary() };
   }
 
-  const pieces = chunkText(text);
+  // Structured text (newline-separated blocks) is chunked along its lines; flat text falls back to words.
+  const pieces = text.includes("\n") ? chunkStructured(text) : chunkText(text);
   if (pieces.length === 0) {
     return { skipped: true, reason: "no extractable text", sourceKey, contentHash };
   }
@@ -113,6 +114,7 @@ export async function indexSource(client, collection, { canonicalUrl: rawUrl, ti
       contentHash,
       chunkIndex: i,
       chunkCount: pieces.length,
+      pageKind,
       text: chunk,
       observedTabId: observedTabId ?? null,
       observedSessionId: observedSessionId ?? null,

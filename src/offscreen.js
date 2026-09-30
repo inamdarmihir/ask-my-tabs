@@ -215,6 +215,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           title: message.title,
           text: message.text,
           embed,
+          pageKind: message.pageKind,
           observedTabId: message.tabId,
           observedSessionId: message.sessionId,
           onProgress: (p) => broadcast({ type: "INDEX_PROGRESS", tabId: message.tabId, ...p }),
