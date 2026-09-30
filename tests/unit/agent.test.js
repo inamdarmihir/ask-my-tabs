@@ -62,9 +62,16 @@ test("multi-source scope plans queries and searches them concurrently", async ()
   assert.ok(res.citations.length > 0);
 });
 
-test("unknown source count (library scope) still plans", async () => {
+test("a simple question skips planning and never makes a sufficiency call", async () => {
   const { calls, args } = harness();
-  await answerQuestion("anything", { ...args, sourceCount: null }, noop, noop);
+  await answerQuestion("how does caching work", { ...args, sourceCount: null }, noop, noop);
+  assert.equal(calls.chatJSON.length, 0);
+  assert.equal(calls.queries, 1);
+});
+
+test("library scope still plans a comparative question", async () => {
+  const { calls, args } = harness();
+  await answerQuestion("alpha vs beta", { ...args, sourceCount: null }, noop, noop);
   assert.equal(calls.chatJSON.filter((c) => c.startsWith("You plan")).length, 1);
 });
 

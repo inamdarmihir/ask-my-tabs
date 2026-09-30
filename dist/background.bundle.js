@@ -130,6 +130,92 @@ async function checkLiveFreshness({ storedContentHash, currentText, hashText: ha
   return { checked: true, matches: currentHash === storedContentHash, currentHash };
 }
 
+// src/lib/threads.js
+var THREADS_KEY = "threads";
+var ACTIVE_THREAD_KEY = "activeThreadId";
+var MAX_THREADS = 60;
+var STALE_PENDING_MS = 5 * 60 * 1e3;
+var CITATION_TEXT_CHARS = 400;
+var INTERRUPTED_MESSAGE = "This answer was interrupted before it finished. Ask again to retry.";
+function titleFrom(question) {
+  const t = (question || "").replace(/\s+/g, " ").trim();
+  return t.length > 60 ? `${t.slice(0, 57)}...` : t || "New chat";
+}
+function sortAndPrune(list) {
+  return [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_THREADS);
+}
+function startTurn(list, { threadId, question, scope, now, newId }) {
+  const messageId = newId();
+  const user = { id: newId(), role: "user", content: question, createdAt: now, scope };
+  const assistant = { id: messageId, role: "assistant", content: "", createdAt: now, status: "pending", statusText: "Starting...", startedAt: now };
+  const existing = list.find((t) => t.id === threadId);
+  const thread = existing ? { ...existing, updatedAt: now, messages: [...existing.messages, user, assistant] } : { id: newId(), title: titleFrom(question), createdAt: now, updatedAt: now, messages: [user, assistant] };
+  const rest = list.filter((t) => t.id !== thread.id);
+  return { list: sortAndPrune([thread, ...rest]), threadId: thread.id, messageId };
+}
+function patchMessage(list, threadId, messageId, patch, now) {
+  return list.map(
+    (t) => t.id !== threadId ? t : { ...t, updatedAt: now, messages: t.messages.map((m) => m.id === messageId ? { ...m, ...patch } : m) }
+  );
+}
+function deleteThread(list, threadId) {
+  return list.filter((t) => t.id !== threadId);
+}
+function trimCitations(citations) {
+  return (citations || []).map((c) => ({
+    ...c,
+    text: typeof c.text === "string" && c.text.length > CITATION_TEXT_CHARS ? `${c.text.slice(0, CITATION_TEXT_CHARS)}...` : c.text
+  }));
+}
+function eventToPatch(event, message) {
+  switch (event.type) {
+    case "MODEL_PROGRESS":
+      return { statusText: typeof event.detail === "string" ? event.detail : `Loading ${event.stage}...` };
+    case "AGENT_STATUS":
+      return { statusText: event.status };
+    case "ANSWER_TOKEN":
+      return { content: event.full ?? `${message?.content || ""}${event.delta}`, statusText: "Writing an answer..." };
+    case "ANSWER_DONE": {
+      const invalid = event.citationValidation?.invalid || [];
+      return {
+        content: event.answer ?? message?.content ?? "",
+        status: "done",
+        statusText: "",
+        citations: trimCitations(event.citations),
+        timings: event.timings || null,
+        abstained: !!event.abstained,
+        invalidCitations: invalid
+      };
+    }
+    case "ANSWER_ERROR":
+      return {
+        status: "error",
+        statusText: "",
+        error: event.qdrant?.kind === "down" ? event.qdrant.message : String(event.error || "Something went wrong."),
+        qdrantDown: event.qdrant?.kind === "down"
+      };
+    default:
+      return null;
+  }
+}
+function sweepInterrupted(list, now, olderThanMs = 0) {
+  let changed = false;
+  const next = list.map((t) => {
+    if (!t.messages.some((m) => m.status === "pending" && now - (m.startedAt ?? m.createdAt) >= olderThanMs)) return t;
+    changed = true;
+    return {
+      ...t,
+      messages: t.messages.map(
+        (m) => m.status === "pending" && now - (m.startedAt ?? m.createdAt) >= olderThanMs ? { ...m, status: "error", statusText: "", error: INTERRUPTED_MESSAGE } : m
+      )
+    };
+  });
+  return changed ? next : list;
+}
+function hasPending(list) {
+  return list.some((t) => t.messages.some((m) => m.status === "pending"));
+}
+
 // src/background.js
 var OFFSCREEN_URL = "offscreen.html";
 var WORKING_SET_KEY = "workingSet";
@@ -261,7 +347,155 @@ async function indexTab(tabId) {
     timings: result.timings
   };
 }
+var threadWrites = Promise.resolve();
+function mutateThreads(fn) {
+  const run = threadWrites.then(async () => {
+    const stored = await chrome.storage.local.get(THREADS_KEY);
+    const next = fn(stored[THREADS_KEY] || []);
+    await chrome.storage.local.set({ [THREADS_KEY]: next });
+    return next;
+  });
+  threadWrites = run.catch((err) => console.error("[background] thread write failed:", err));
+  return run;
+}
+var FLUSH_MS = 250;
+var active = null;
+var buffered = null;
+var flushTimer = null;
+var activeMessage = { content: "" };
+function flushActive() {
+  clearTimeout(flushTimer);
+  flushTimer = null;
+  if (!active || !buffered) return Promise.resolve();
+  const { threadId, messageId } = active;
+  const patch = buffered;
+  buffered = null;
+  return mutateThreads((list) => patchMessage(list, threadId, messageId, patch, Date.now()));
+}
+function queuePatch(patch, { immediate = false } = {}) {
+  activeMessage = { ...activeMessage, ...patch };
+  buffered = { ...buffered, ...patch };
+  if (immediate) return flushActive();
+  if (!flushTimer) flushTimer = setTimeout(flushActive, FLUSH_MS);
+  return Promise.resolve();
+}
+function handleAnswerEvent(event) {
+  if (!active || event.requestId && event.requestId !== active.messageId) return;
+  const patch = eventToPatch(event, activeMessage);
+  if (!patch) return;
+  const finished = event.type === "ANSWER_DONE" || event.type === "ANSWER_ERROR";
+  queuePatch(patch, { immediate: finished }).then(() => {
+    if (finished) active = null;
+  });
+}
+async function sendQuestion(message) {
+  if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
+  let ids;
+  await mutateThreads((list) => {
+    const turn = startTurn(list, {
+      threadId: message.threadId,
+      question: message.question,
+      scope: message.scope,
+      now: Date.now(),
+      newId: () => crypto.randomUUID()
+    });
+    ids = turn;
+    return turn.list;
+  });
+  active = { threadId: ids.threadId, messageId: ids.messageId };
+  activeMessage = { content: "" };
+  buffered = null;
+  await chrome.storage.local.set({ [ACTIVE_THREAD_KEY]: ids.threadId });
+  try {
+    await ensureOffscreenDocument();
+    const ack = await sendToOffscreen({
+      type: "ASK",
+      requestId: ids.messageId,
+      question: message.question,
+      filter: message.filter,
+      tabTitles: message.tabTitles,
+      sourceCount: message.sourceCount
+    });
+    if (!ack?.ok) throw new Error("The answer engine didn't start.");
+  } catch (err) {
+    handleAnswerEvent({ type: "ANSWER_ERROR", requestId: ids.messageId, error: err?.message || String(err) });
+  }
+  return { threadId: ids.threadId, messageId: ids.messageId };
+}
+async function sweepPendingThreads() {
+  await mutateThreads((list) => hasPending(list) ? sweepInterrupted(list, Date.now()) : list);
+}
+var INDEX_JOB_KEY = "indexJob";
+var jobRunning = false;
+var jobState = null;
+function setJob(patch) {
+  jobState = { ...jobState, ...patch };
+  return chrome.storage.session.set({ [INDEX_JOB_KEY]: jobState }).catch(() => {
+  });
+}
+async function runIndexJob(tabs) {
+  if (jobRunning) throw new Error("Already indexing. Wait for the current job to finish.");
+  jobRunning = true;
+  jobState = { running: true, total: tabs.length, done: 0, added: 0, unchanged: 0, failures: [], current: null, startedAt: Date.now(), finishedAt: null };
+  await setJob({});
+  (async () => {
+    for (const tab of tabs) {
+      await setJob({ current: { tabId: tab.id, title: tab.title || tab.url, stage: "reading", done: 0, total: 0 } });
+      try {
+        const res = await indexTab(tab.id);
+        await setJob(res.skipped ? { unchanged: jobState.unchanged + 1 } : { added: jobState.added + 1 });
+      } catch (err) {
+        await setJob({ failures: [...jobState.failures, { title: tab.title || tab.url, error: err?.message || String(err) }] });
+      }
+      await setJob({ done: jobState.done + 1 });
+    }
+    await setJob({ running: false, current: null, finishedAt: Date.now() });
+    jobRunning = false;
+  })().catch((err) => {
+    console.error("[background] index job crashed:", err);
+    jobRunning = false;
+    setJob({ running: false, current: null, finishedAt: Date.now() });
+  });
+}
+function handleIndexProgress(event) {
+  if (!jobRunning || jobState?.current?.tabId !== event.tabId) return;
+  setJob({ current: { ...jobState.current, stage: event.stage, done: event.done ?? 0, total: event.total ?? 0 } });
+}
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "SEND_QUESTION") {
+    sendQuestion(message).then((r) => sendResponse({ ok: true, ...r })).catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
+  if (message.type === "DELETE_THREAD") {
+    mutateThreads((list) => deleteThread(list, message.threadId)).then(() => sendResponse({ ok: true })).catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+  if (message.type === "START_INDEX_JOB") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query(message.all ? { currentWindow: true } : { active: true, currentWindow: true });
+        const eligible = tabs.filter((t) => /^https?:\/\//.test(t.url || ""));
+        if (eligible.length === 0) throw new Error("No regular web pages (http/https) to add.");
+        await runIndexJob(eligible);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+    return true;
+  }
+  if (message.type === "MODEL_PROGRESS" && active) {
+    handleAnswerEvent({ ...message, requestId: active.messageId });
+    return false;
+  }
+  if (message.type === "AGENT_STATUS" || message.type === "ANSWER_TOKEN" || message.type === "ANSWER_DONE" || message.type === "ANSWER_ERROR") {
+    handleAnswerEvent(message);
+    return false;
+  }
+  if (message.type === "INDEX_PROGRESS") {
+    handleIndexProgress(message);
+    return false;
+  }
   if (message.type === "INDEX_TAB") {
     indexTab(message.tabId).then((result) => sendResponse({ ok: true, ...result })).catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
     return true;
@@ -332,6 +566,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 chrome.runtime.onInstalled.addListener((details) => {
+  sweepPendingThreads().catch(() => {
+  });
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
   if (details.reason === "install") {
     chrome.tabs.create({ url: chrome.runtime.getURL("onboarding.html") }).catch(() => {
@@ -339,5 +575,6 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 chrome.runtime.onStartup.addListener(() => {
+  sweepPendingThreads().catch((err) => console.error("[background] sweep failed:", err));
   getSessionId().catch((err) => console.error("[background] session id init failed:", err));
 });

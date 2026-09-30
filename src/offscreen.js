@@ -79,7 +79,12 @@ let llmPromise = null;
 function describeProgress(label, p) {
   if (typeof p === "string") return p;
   if (!p) return null;
-  if (typeof p.text === "string") return p.text;
+  // WebLLM: {progress: 0-1, text}. Its text is a long file-by-file log line; show a clean percent.
+  if (typeof p.text === "string") {
+    return typeof p.progress === "number" && p.progress > 0 && p.progress < 1
+      ? `Loading ${label} model... ${Math.round(p.progress * 100)}%`
+      : p.text;
+  }
   if (p.status === "progress" && typeof p.progress === "number") {
     return `Downloading ${label} model... ${Math.round(p.progress)}%`;
   }
@@ -270,14 +275,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             chatJSON: llmFunctions.chatJSON,
             chatStream: llmFunctions.chatStream,
           },
-          (status) => broadcast({ type: "AGENT_STATUS", status }),
-          (delta, full) => broadcast({ type: "ANSWER_TOKEN", delta, full }),
+          (status) => broadcast({ type: "AGENT_STATUS", requestId: message.requestId, status }),
+          (delta, full) => broadcast({ type: "ANSWER_TOKEN", requestId: message.requestId, delta, full }),
         );
         console.info("[offscreen] answered", result.timings);
-        broadcast({ type: "ANSWER_DONE", ...result });
+        broadcast({ type: "ANSWER_DONE", requestId: message.requestId, ...result });
       } catch (err) {
         console.error("[offscreen] answering failed:", err);
-        broadcast({ type: "ANSWER_ERROR", error: String(err), qdrant: describeQdrantError(err) });
+        broadcast({ type: "ANSWER_ERROR", requestId: message.requestId, error: String(err?.message || err), qdrant: describeQdrantError(err) });
       }
     })();
     return false;

@@ -6,7 +6,7 @@ const watch = process.argv.includes("--watch");
 const entryPoints = [
   { in: "src/background.js", out: "background" },
   { in: "src/offscreen.js", out: "offscreen" },
-  { in: "src/popup.js", out: "popup" },
+  { in: "src/popup/main.jsx", out: "popup" },
   { in: "src/settings.js", out: "settings" },
   { in: "src/onboarding.js", out: "onboarding" },
 ];
@@ -23,8 +23,10 @@ function copyOrtRuntime() {
 copyOrtRuntime();
 
 const options = {
-  entryPoints: entryPoints.map((e) => e.in),
+  entryPoints: Object.fromEntries(entryPoints.map((e) => [e.out, e.in])),
   bundle: true,
+  jsx: "automatic",
+  define: { "process.env.NODE_ENV": '"production"' },
   format: "esm",
   target: "chrome120",
   platform: "browser",

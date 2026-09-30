@@ -9,6 +9,9 @@
 import { canonicalizeUrl } from "./lib/ids.js";
 import { hashText } from "./lib/chunk.js";
 import { checkLiveFreshness } from "./lib/freshness.js";
+import {
+  THREADS_KEY, ACTIVE_THREAD_KEY, startTurn, patchMessage, deleteThread, eventToPatch, sweepInterrupted, hasPending,
+} from "./lib/threads.js";
 
 const OFFSCREEN_URL = "offscreen.html";
 const WORKING_SET_KEY = "workingSet";
@@ -177,7 +180,187 @@ async function indexTab(tabId) {
   };
 }
 
+// ─── Chat threads ─────────────────────────────────────────────────────────────
+// This worker owns every in-flight answer. The offscreen document streams events; they are folded
+// into the stored thread here, so the popup can close and reopen mid-answer (or the browser can
+// restart) without losing anything. The popup only reads storage.
+
+let threadWrites = Promise.resolve();
+function mutateThreads(fn) {
+  const run = threadWrites.then(async () => {
+    const stored = await chrome.storage.local.get(THREADS_KEY);
+    const next = fn(stored[THREADS_KEY] || []);
+    await chrome.storage.local.set({ [THREADS_KEY]: next });
+    return next;
+  });
+  threadWrites = run.catch((err) => console.error("[background] thread write failed:", err));
+  return run;
+}
+
+// The one answer currently being produced, and streamed patches waiting to be written. Tokens
+// arrive many times a second; writing each would thrash storage, so they are flushed at most
+// every FLUSH_MS.
+const FLUSH_MS = 250;
+let active = null; // { threadId, messageId }
+let buffered = null;
+let flushTimer = null;
+let activeMessage = { content: "" }; // running copy, so token deltas can be appended without a read
+
+function flushActive() {
+  clearTimeout(flushTimer);
+  flushTimer = null;
+  if (!active || !buffered) return Promise.resolve();
+  const { threadId, messageId } = active;
+  const patch = buffered;
+  buffered = null;
+  return mutateThreads((list) => patchMessage(list, threadId, messageId, patch, Date.now()));
+}
+
+function queuePatch(patch, { immediate = false } = {}) {
+  activeMessage = { ...activeMessage, ...patch };
+  buffered = { ...buffered, ...patch };
+  if (immediate) return flushActive();
+  if (!flushTimer) flushTimer = setTimeout(flushActive, FLUSH_MS);
+  return Promise.resolve();
+}
+
+function handleAnswerEvent(event) {
+  if (!active || (event.requestId && event.requestId !== active.messageId)) return;
+  const patch = eventToPatch(event, activeMessage);
+  if (!patch) return;
+  const finished = event.type === "ANSWER_DONE" || event.type === "ANSWER_ERROR";
+  queuePatch(patch, { immediate: finished }).then(() => {
+    if (finished) active = null;
+  });
+}
+
+async function sendQuestion(message) {
+  if (active) throw new Error("Still answering the previous question. Wait for it to finish.");
+  let ids;
+  await mutateThreads((list) => {
+    const turn = startTurn(list, {
+      threadId: message.threadId,
+      question: message.question,
+      scope: message.scope,
+      now: Date.now(),
+      newId: () => crypto.randomUUID(),
+    });
+    ids = turn;
+    return turn.list;
+  });
+  active = { threadId: ids.threadId, messageId: ids.messageId };
+  activeMessage = { content: "" };
+  buffered = null;
+  await chrome.storage.local.set({ [ACTIVE_THREAD_KEY]: ids.threadId });
+
+  try {
+    await ensureOffscreenDocument();
+    const ack = await sendToOffscreen({
+      type: "ASK",
+      requestId: ids.messageId,
+      question: message.question,
+      filter: message.filter,
+      tabTitles: message.tabTitles,
+      sourceCount: message.sourceCount,
+    });
+    if (!ack?.ok) throw new Error("The answer engine didn't start.");
+  } catch (err) {
+    handleAnswerEvent({ type: "ANSWER_ERROR", requestId: ids.messageId, error: err?.message || String(err) });
+  }
+  return { threadId: ids.threadId, messageId: ids.messageId };
+}
+
+// At browser start nothing can still be running, so any pending answer is a leftover.
+async function sweepPendingThreads() {
+  await mutateThreads((list) => (hasPending(list) ? sweepInterrupted(list, Date.now()) : list));
+}
+
+// ─── Indexing jobs ────────────────────────────────────────────────────────────
+// "Add current tab" and "Add all" both run here as a job whose progress is kept in
+// chrome.storage.session, so the popup can close and reopen mid-index and still show it.
+
+const INDEX_JOB_KEY = "indexJob";
+let jobRunning = false;
+let jobState = null;
+
+function setJob(patch) {
+  jobState = { ...jobState, ...patch };
+  return chrome.storage.session.set({ [INDEX_JOB_KEY]: jobState }).catch(() => {});
+}
+
+async function runIndexJob(tabs) {
+  if (jobRunning) throw new Error("Already indexing. Wait for the current job to finish.");
+  jobRunning = true;
+  jobState = { running: true, total: tabs.length, done: 0, added: 0, unchanged: 0, failures: [], current: null, startedAt: Date.now(), finishedAt: null };
+  await setJob({});
+  (async () => {
+    for (const tab of tabs) {
+      await setJob({ current: { tabId: tab.id, title: tab.title || tab.url, stage: "reading", done: 0, total: 0 } });
+      try {
+        const res = await indexTab(tab.id);
+        await setJob(res.skipped ? { unchanged: jobState.unchanged + 1 } : { added: jobState.added + 1 });
+      } catch (err) {
+        await setJob({ failures: [...jobState.failures, { title: tab.title || tab.url, error: err?.message || String(err) }] });
+      }
+      await setJob({ done: jobState.done + 1 });
+    }
+    await setJob({ running: false, current: null, finishedAt: Date.now() });
+    jobRunning = false;
+  })().catch((err) => {
+    console.error("[background] index job crashed:", err);
+    jobRunning = false;
+    setJob({ running: false, current: null, finishedAt: Date.now() });
+  });
+}
+
+function handleIndexProgress(event) {
+  if (!jobRunning || jobState?.current?.tabId !== event.tabId) return;
+  setJob({ current: { ...jobState.current, stage: event.stage, done: event.done ?? 0, total: event.total ?? 0 } });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "SEND_QUESTION") {
+    sendQuestion(message)
+      .then((r) => sendResponse({ ok: true, ...r }))
+      .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+    return true;
+  }
+
+  if (message.type === "DELETE_THREAD") {
+    mutateThreads((list) => deleteThread(list, message.threadId))
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+
+  if (message.type === "START_INDEX_JOB") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query(message.all ? { currentWindow: true } : { active: true, currentWindow: true });
+        const eligible = tabs.filter((t) => /^https?:\/\//.test(t.url || ""));
+        if (eligible.length === 0) throw new Error("No regular web pages (http/https) to add.");
+        await runIndexJob(eligible);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message || String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "MODEL_PROGRESS" && active) {
+    handleAnswerEvent({ ...message, requestId: active.messageId });
+    return false;
+  }
+  if (message.type === "AGENT_STATUS" || message.type === "ANSWER_TOKEN" || message.type === "ANSWER_DONE" || message.type === "ANSWER_ERROR") {
+    handleAnswerEvent(message);
+    return false;
+  }
+  if (message.type === "INDEX_PROGRESS") {
+    handleIndexProgress(message);
+    return false;
+  }
+
   if (message.type === "INDEX_TAB") {
     indexTab(message.tabId)
       .then((result) => sendResponse({ ok: true, ...result }))
@@ -269,6 +452,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
+  sweepPendingThreads().catch(() => {});
   ensureOffscreenDocument().catch((err) => console.error("[background] offscreen setup failed:", err));
   // Open onboarding only on a genuine first install, never on extension updates.
   if (details.reason === "install") {
@@ -277,6 +461,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  sweepPendingThreads().catch((err) => console.error("[background] sweep failed:", err));
   // New browser session -- force a fresh session ID so any working-set entries left over from
   // chrome.storage.local (which does survive a restart, unlike chrome.storage.session) are
   // recognized as needing tab re-verification before their tabId is trusted again.

@@ -22,6 +22,8 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.7.5",
-    "@mlc-ai/web-llm": "^0.2.79"
+    "@mlc-ai/web-llm": "^0.2.79",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   }
 }
