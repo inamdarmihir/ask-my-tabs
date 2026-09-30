@@ -33086,7 +33086,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
             /** @type {'none'} */
             "none"
           ),
-          normalize = false,
+          normalize: normalize2 = false,
           quantize = false,
           precision = (
             /** @type {'binary'} */
@@ -33116,7 +33116,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
             default:
               throw Error(`Pooling method '${pooling}' not supported.`);
           }
-          if (normalize) {
+          if (normalize2) {
             result = result.normalize(2, -1);
           }
           if (quantize) {
@@ -70436,6 +70436,27 @@ var MLCEngine = class {
   }
 };
 
+// src/lib/repetition.js
+var normalize = (line) => line.toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+function trimRepetition(text, maxRepeats = 3) {
+  const lines = (text || "").split("\n");
+  const seen = /* @__PURE__ */ new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const key = normalize(lines[i]);
+    if (key.length < 12) continue;
+    const n = (seen.get(key) || 0) + 1;
+    seen.set(key, n);
+    if (n >= maxRepeats) {
+      const kept = lines.slice(0, i);
+      while (kept.length && normalize(kept[kept.length - 1]) === key) kept.pop();
+      return { text: kept.join("\n").trimEnd(), looped: true };
+    }
+  }
+  const m = (text || "").match(/(.{12,}?)\1{2,}$/s);
+  if (m) return { text: text.slice(0, text.length - m[0].length + m[1].length).trimEnd(), looped: true };
+  return { text, looped: false };
+}
+
 // src/lib/gpu.js
 async function hasWebGPU() {
   if (typeof navigator === "undefined" || !navigator.gpu) return false;
@@ -70485,16 +70506,26 @@ async function chatStream(messages, onToken) {
   const stream = await engine.chat.completions.create({
     messages,
     temperature: 0.3,
+    // A 0.6B model easily loops on list-like pages; penalize repeats and cap the length.
+    frequency_penalty: 0.6,
+    repetition_penalty: 1.1,
+    max_tokens: 600,
     stream: true,
     extra_body: NO_THINKING
   });
   let full = "";
   for await (const chunk of stream) {
     const delta = chunk.choices[0]?.delta?.content || "";
-    if (delta) {
-      full += delta;
-      onToken(delta, full);
+    if (!delta) continue;
+    full += delta;
+    const { text, looped } = trimRepetition(full);
+    if (looped) {
+      engine.interruptGenerate();
+      full = text;
+      onToken("", full);
+      break;
     }
+    onToken(delta, full);
   }
   return full;
 }
@@ -71429,7 +71460,7 @@ async function answerQuestion(question, { client, collection, mode = "hybrid", f
     [
       {
         role: "system",
-        content: `Answer the user's question using ONLY the numbered snippets provided. The snippets are the content of the page(s) the user is asking about, so "the page" or "this page" means them: describe what they contain. Cite snippets inline like [1] or [2] next to the claims they support. If the snippets don't fully answer the question, say what's missing instead of guessing. ` + UNTRUSTED_CONTENT_NOTICE
+        content: `Answer the user's question using ONLY the numbered snippets provided. The snippets are the content of the page(s) the user is asking about, so "the page" or "this page" means them: describe what they contain in your own words, briefly. Never copy snippets line by line and never repeat yourself. Cite snippets inline like [1] or [2] next to the claims they support. If the snippets don't fully answer the question, say what's missing instead of guessing. ` + UNTRUSTED_CONTENT_NOTICE
       },
       { role: "user", content: `Snippets:
 ${contextBlock}

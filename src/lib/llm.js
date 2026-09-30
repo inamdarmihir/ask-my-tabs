@@ -2,6 +2,7 @@
 // turns retrieved snippets into an actual written answer instead of a ranked list of quotes.
 
 import { CreateMLCEngine, prebuiltAppConfig } from "@mlc-ai/web-llm";
+import { trimRepetition } from "./repetition.js";
 import { hasWebGPU, WEBGPU_UNAVAILABLE_MESSAGE } from "./gpu.js";
 
 // Qwen3-0.6B: roughly a third of the download of the previous Qwen2.5-1.5B, and a newer model
@@ -66,16 +67,26 @@ export async function chatStream(messages, onToken) {
   const stream = await engine.chat.completions.create({
     messages,
     temperature: 0.3,
+    // A 0.6B model easily loops on list-like pages; penalize repeats and cap the length.
+    frequency_penalty: 0.6,
+    repetition_penalty: 1.1,
+    max_tokens: 600,
     stream: true,
     extra_body: NO_THINKING,
   });
   let full = "";
   for await (const chunk of stream) {
     const delta = chunk.choices[0]?.delta?.content || "";
-    if (delta) {
-      full += delta;
-      onToken(delta, full);
+    if (!delta) continue;
+    full += delta;
+    const { text, looped } = trimRepetition(full);
+    if (looped) {
+      engine.interruptGenerate();
+      full = text;
+      onToken("", full);
+      break;
     }
+    onToken(delta, full);
   }
   return full;
 }

@@ -223,7 +223,8 @@ export async function answerQuestion(
         content:
           "Answer the user's question using ONLY the numbered snippets provided. The snippets are the " +
           'content of the page(s) the user is asking about, so "the page" or "this page" means them: ' +
-          "describe what they contain. Cite snippets " +
+          "describe what they contain in your own words, briefly. Never copy snippets line by line and " +
+          "never repeat yourself. Cite snippets " +
           'inline like [1] or [2] next to the claims they support. If the snippets don\'t fully ' +
           "answer the question, say what's missing instead of guessing. " +
           UNTRUSTED_CONTENT_NOTICE,
