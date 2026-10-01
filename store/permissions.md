@@ -3,10 +3,10 @@
 Chrome Web Store reviewers require explicit justification for every permission requested in `manifest.json`. Copy these into the developer console when submitting.
 
 ## `tabs` and `activeTab`
-**Why it's needed:** The core user flow is clicking the "Add current tab" button in the extension popup. The extension needs to read the current tab's URL and title to save it to the user's vector database. It does not monitor tabs in the background.
+**Why it's needed:** The core user flow is choosing tabs to add in the extension popup (the current tab, or specific open tabs the user ticks). The extension needs to read a chosen tab's URL and title to save it to the user's vector database. It does not monitor tabs in the background.
 
 ## `scripting`
-**Why it's needed:** When the user clicks "Add current tab", the extension injects a small content script (`src/background.js` -> `extractPageText()`) to read the `document.body.innerText` of that specific tab. This text is what gets embedded and saved to the user's vector database. We do not use this to modify the page or inject ads.
+**Why it's needed:** When the user adds a tab, the extension injects a small content script (`src/background.js` -> `extractPageText()`) to read the `document.body.innerText` of that specific tab. This text is what gets embedded and saved to the user's vector database. We do not use this to modify the page or inject ads.
 
 ## `storage`
 **Why it's needed:** Used to store the user's API keys (Qdrant Cloud, OpenAI/Gemini), their chosen LLM model, and the list of tabs they currently have in their "working set" (which resets when tabs are closed).

@@ -20,6 +20,7 @@ import { DEFAULT_CONFIG } from "./lib/config.js";
 import { libraryCollectionName, DEFAULT_RETRIEVAL_MODE } from "./lib/constants.js";
 import { EMBEDDING_MODEL } from "./lib/embedding-model.js";
 import { SPARSE_ALGORITHM_VERSION } from "./lib/sparse.js";
+import { normalizeProgress } from "./lib/model-progress.js";
 
 const LIBRARY_COLLECTION = libraryCollectionName(EMBEDDING_MODEL.key, SPARSE_ALGORITHM_VERSION);
 import { embedQuery } from "./lib/embeddings.js";
@@ -91,32 +92,21 @@ let embedderPromise = null;
 let llmReady = false;
 let llmPromise = null;
 
-// transformers.js reports {status, file, progress: 0-100}; WebLLM reports {progress: 0-1, text}.
-// Returns a short human string, or null for events not worth showing.
-function describeProgress(label, p) {
-  if (typeof p === "string") return p;
-  if (!p) return null;
-  // WebLLM: {progress: 0-1, text}. Its text is a long file-by-file log line; show a clean percent.
-  if (typeof p.text === "string") {
-    return typeof p.progress === "number" && p.progress > 0 && p.progress < 1
-      ? `Loading ${label} model... ${Math.round(p.progress * 100)}%`
-      : p.text;
-  }
-  if (p.status === "progress" && typeof p.progress === "number") {
-    return `Downloading ${label} model... ${Math.round(p.progress)}%`;
-  }
-  return null;
-}
+// Latest progress of the on-device answer model, so a popup opened mid-download can show a live bar
+// instead of waiting for the next event.
+let lastLLMProgress = null;
 
 function reportModelProgress(stage, label, p) {
-  const detail = describeProgress(label, p);
-  if (detail) broadcast({ type: "MODEL_PROGRESS", stage, detail });
+  const progress = normalizeProgress(label, p);
+  if (!progress) return;
+  if (stage === "llm") lastLLMProgress = progress;
+  broadcast({ type: "MODEL_PROGRESS", stage, ...progress });
 }
 
 function ensureEmbedderLoaded() {
   if (embedderReady) return Promise.resolve();
   if (!embedderPromise) {
-    broadcast({ type: "MODEL_PROGRESS", stage: "embedder", detail: "Loading embedding model..." });
+    broadcast({ type: "MODEL_PROGRESS", stage: "embedder", pct: null, phase: "init", mb: null, detail: "Loading embedding model..." });
     embedderPromise = loadEmbedder((p) => reportModelProgress("embedder", "embedding", p))
       .then(() => {
         embedderReady = true;
@@ -134,13 +124,16 @@ function ensureEmbedderLoaded() {
 function ensureLLMLoaded(cfg) {
   if (cfg.llmProvider !== "webllm" || llmReady) return Promise.resolve();
   if (!llmPromise) {
-    broadcast({ type: "MODEL_PROGRESS", stage: "llm", detail: "Loading language model (~0.5 GB, one-time)..." });
+    lastLLMProgress = { pct: null, phase: "init", mb: null, detail: "Loading language model (~0.5 GB, one-time)..." };
+    broadcast({ type: "MODEL_PROGRESS", stage: "llm", ...lastLLMProgress });
     llmPromise = loadLLM((p) => reportModelProgress("llm", "language", p))
       .then(() => {
         llmReady = true;
+        lastLLMProgress = null;
       })
       .catch((err) => {
         llmPromise = null;
+        lastLLMProgress = null;
         throw err;
       });
   }
@@ -178,9 +171,10 @@ applyConfig().catch((err) => console.warn("[offscreen] config load on startup fa
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_STATE") {
+    const llmState = { llmLoading: !!llmPromise && !llmReady, llmProgress: lastLLMProgress };
     getConfig()
-      .then((cfg) => sendResponse({ ok: true, modelsReady: modelsReadyFor(cfg), embedderReady }))
-      .catch(() => sendResponse({ ok: true, modelsReady: false, embedderReady }));
+      .then((cfg) => sendResponse({ ok: true, modelsReady: modelsReadyFor(cfg), embedderReady, ...llmState }))
+      .catch(() => sendResponse({ ok: true, modelsReady: false, embedderReady, ...llmState }));
     return true;
   }
 

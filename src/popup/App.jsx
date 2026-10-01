@@ -1,40 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Layers, MessageSquare } from "lucide-react";
 import { buildScopeFilter } from "../lib/filters.js";
 import { THREADS_KEY, ACTIVE_THREAD_KEY } from "../lib/threads.js";
+import { cn } from "../ui/cn.js";
+import { NavTabs } from "../ui/form.jsx";
+import { Toaster, toast } from "../ui/toaster.jsx";
+import { send, useModel, useQdrant, useStorage } from "../ui/hooks.js";
+import { ActivityStrip } from "./ActivityStrip.jsx";
 import { Chat } from "./Chat.jsx";
+import { Header, overallStatus } from "./Header.jsx";
 import { History } from "./History.jsx";
 import { Pages } from "./Pages.jsx";
-import { ExpandIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./icons.jsx";
-import { send, useModel, useQdrant, useStorage } from "./hooks.js";
+import { SetupChecklist, setupSteps } from "./SetupChecklist.jsx";
 
 const NO_THREADS = [];
 const NO_PAGES = [];
 const NO_ID = null;
-
-function Banners({ qdrant, checkQdrant, model, downloadModel }) {
-  return (
-    <>
-      {qdrant.status === "down" && (
-        <div className="banner banner-bad">
-          <span>
-            {qdrant.location === "local"
-              ? "Can't reach Qdrant on this computer. Run \"docker compose up -d\" in the project folder, then retry."
-              : "Can't reach your Qdrant Cloud cluster. Check the URL and API key in Settings, then retry."}
-          </span>
-          <button className="btn btn-danger btn-sm" onClick={checkQdrant}>Retry</button>
-        </div>
-      )}
-      {!model.label && !model.ready && (
-        <div className="banner">
-          <span>{model.error ? `Model load failed: ${model.error}` : model.progress || "The on-device answer model isn't downloaded yet (about 0.5 GB, one time)."}</span>
-          <button className="btn btn-primary btn-sm" disabled={model.loading && !model.error} onClick={downloadModel}>
-            {model.error ? "Retry" : model.loading ? "Loading..." : "Download"}
-          </button>
-        </div>
-      )}
-    </>
-  );
-}
 
 export function App() {
   const full = new URLSearchParams(location.search).has("full");
@@ -46,7 +27,7 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [scope, setScope] = useState("working-set");
   const [filter, setFilter] = useState({ domain: "", date: "" });
-  const [sendError, setSendError] = useState(null);
+  const [root, setRoot] = useState(null);
   const [qdrant, checkQdrant] = useQdrant();
   const [model, downloadModel] = useModel();
 
@@ -59,11 +40,14 @@ export function App() {
 
   const setActive = useCallback((id) => chrome.storage.local.set({ [ACTIVE_THREAD_KEY]: id }), []);
 
-  const canAsk = scope === "library" || workingSet.length > 0;
-  const blockedReason = "Your working set is empty. Add the pages you want to ask about, or switch to Library to search everything you've indexed.";
+  const steps = setupSteps({ qdrant, model, workingSet, scope });
+  const setupIncomplete = steps.some((s) => !s.done);
+  const dbDown = qdrant.status === "down";
+  const needsPages = scope === "working-set" && workingSet.length === 0;
+  const canAsk = !needsPages && !dbDown;
+  const blockedHint = dbDown ? "Connect your database to start asking" : "Add a page to start asking";
 
   const onSend = async (question) => {
-    setSendError(null);
     const filterForScope =
       scope === "working-set"
         ? buildScopeFilter({ sourceKeys: workingSet.map((t) => t.sourceKey) })
@@ -77,7 +61,7 @@ export function App() {
       tabTitles: workingSet.map((t) => t.title),
       sourceCount: scope === "working-set" ? new Set(workingSet.map((t) => t.sourceKey)).size : null,
     }).catch((e) => ({ ok: false, error: String(e) }));
-    if (!res?.ok) setSendError(res?.error || "Couldn't send the question.");
+    if (!res?.ok) toast.error(res?.error || "Couldn't send the question.");
   };
 
   const removeFromWorkingSet = async (tabId) => {
@@ -94,84 +78,51 @@ export function App() {
     if (id === activeId) await setActive(null);
   };
 
-  const modelLabel = model.label ? model.label : "on this device";
-  const qdrantDot = qdrant.status === "up" ? "ok" : qdrant.status === "down" ? "bad" : "";
+  const newChat = () => {
+    setView("chat");
+    setActive(null);
+  };
+
+  const setup = setupIncomplete ? (
+    <SetupChecklist qdrant={qdrant} checkQdrant={checkQdrant} model={model} downloadModel={downloadModel} steps={steps} onGoPages={() => setView("pages")} />
+  ) : null;
+
+  // The checklist and the Pages tab draw their own progress bars, so the strip skips the duplicate.
+  const checklistShown = view === "chat" && setupIncomplete && !thread?.messages.length;
 
   return (
-    <div className={`app ${full ? "app-full" : ""}`}>
-      <header className="header">
-        <div className="brand">
-          <img src="icons/icon48.png" alt="" width="22" height="22" />
-          <h1>Ask My Tabs</h1>
+    <div ref={setRoot} className={cn("relative flex flex-col overflow-hidden bg-background text-foreground", full ? "mx-auto h-screen w-full max-w-3xl border-x border-border" : "h-[580px] w-[440px]")}>
+      <Header full={full} status={overallStatus({ qdrant, model })} qdrant={qdrant} checkQdrant={checkQdrant} model={model} onNewChat={newChat} onOpenHistory={() => setShowHistory(true)} />
+      <ActivityStrip model={model} job={job} onOpenPages={() => setView("pages")} hideModel={checklistShown} hideJob={view === "pages"} />
+      <NavTabs
+        value={view}
+        onValueChange={setView}
+        items={[
+          { value: "chat", label: (<><MessageSquare />Chat</>) },
+          { value: "pages", label: (<><Layers />Pages{workingSet.length ? <span className="rounded-full bg-muted px-1.5 text-[11px] leading-4 text-muted-foreground">{workingSet.length}</span> : null}</>) },
+        ]}
+      />
+      <main className="flex min-h-0 flex-1 flex-col">
+        {/* Chat stays mounted behind the Pages tab so a half-typed question and the scroll position survive. */}
+        <div hidden={view !== "chat"} className="flex min-h-0 flex-1 flex-col">
+          <Chat thread={thread} workingSet={workingSet} busy={!threadsLoaded} scope={scope} setScope={setScope} canAsk={canAsk} blockedHint={blockedHint} onSend={onSend} setup={setup} />
         </div>
-        <div className="header-actions">
-          <button className="icon-btn" onClick={() => { setView("chat"); setActive(null); }} title="New chat" aria-label="New chat"><PlusIcon /></button>
-          <button className="icon-btn" onClick={() => setShowHistory(true)} title="History" aria-label="History"><HistoryIcon /></button>
-          {!full && (
-            <button className="icon-btn" onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?full=1") })} title="Open in a tab" aria-label="Open in a tab"><ExpandIcon /></button>
-          )}
-          <button className="icon-btn" onClick={() => chrome.runtime.openOptionsPage()} title="Settings" aria-label="Settings"><SettingsIcon /></button>
-        </div>
-      </header>
-
-      <div className="chips">
-        <button className="chip" onClick={checkQdrant} title="Vector database. Click to re-check.">
-          <span className={`dot ${qdrantDot}`} />
-          Qdrant: {qdrant.status === "checking" ? "checking..." : `${qdrant.location}${qdrant.status === "down" ? " (unreachable)" : ""}`}
-        </button>
-        <button className="chip" onClick={() => chrome.runtime.openOptionsPage()} title="Answer model. Click to change in Settings.">
-          <span className="dot ok" />
-          Answers: {modelLabel}
-        </button>
-      </div>
-
-      <nav className="tabs" role="tablist">
-        <button role="tab" aria-selected={view === "chat"} className={view === "chat" ? "on" : ""} onClick={() => setView("chat")}>Chat</button>
-        <button role="tab" aria-selected={view === "pages"} className={view === "pages" ? "on" : ""} onClick={() => setView("pages")}>
-          Pages{workingSet.length ? <span className="count">{workingSet.length}</span> : null}
-          {job?.running && <span className="live-dot" />}
-        </button>
-      </nav>
-
-      <Banners qdrant={qdrant} checkQdrant={checkQdrant} model={model} downloadModel={downloadModel} />
-
-      <main className="main">
-        {view === "chat" ? (
-          <Chat
-            thread={thread}
-            workingSet={workingSet}
-            busy={!threadsLoaded}
-            scope={scope}
-            setScope={setScope}
-            canAsk={canAsk}
-            blockedReason={blockedReason}
-            onSend={onSend}
-            onGoPages={() => setView("pages")}
-          />
-        ) : (
-          <Pages
-            workingSet={workingSet}
-            job={job}
-            qdrantUp={qdrant.status === "up"}
-            filter={filter}
-            setFilter={setFilter}
-            onRemove={removeFromWorkingSet}
-            onLibraryDeleted={onLibraryDeleted}
-          />
+        {view === "pages" && (
+          <Pages workingSet={workingSet} job={job} qdrantUp={qdrant.status === "up"} filter={filter} setFilter={setFilter} onRemove={removeFromWorkingSet} onLibraryDeleted={onLibraryDeleted} />
         )}
-        {sendError && <div className="toast error-box" onClick={() => setSendError(null)}>{sendError}</div>}
       </main>
 
-      {showHistory && (
-        <History
-          threads={threads}
-          activeId={activeId}
-          onOpen={(id) => { setActive(id); setView("chat"); setShowHistory(false); }}
-          onNew={() => { setActive(null); setView("chat"); setShowHistory(false); }}
-          onDelete={deleteThread}
-          onClose={() => setShowHistory(false)}
-        />
-      )}
+      <History
+        open={showHistory}
+        onOpenChange={setShowHistory}
+        container={root}
+        threads={threads}
+        activeId={activeId}
+        onOpen={(id) => { setActive(id); setView("chat"); setShowHistory(false); }}
+        onNew={() => { newChat(); setShowHistory(false); }}
+        onDelete={deleteThread}
+      />
+      <Toaster offset={full ? 16 : 8} />
     </div>
   );
 }

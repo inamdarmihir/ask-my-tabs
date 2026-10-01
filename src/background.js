@@ -432,8 +432,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "START_INDEX_JOB") {
     (async () => {
       try {
-        const tabs = await chrome.tabs.query(message.all ? { currentWindow: true } : { active: true, currentWindow: true });
-        const eligible = tabs.filter((t) => /^https?:\/\//.test(t.url || ""));
+        // `tabIds` lets the UI index exactly the tabs the user picked; otherwise the active tab or the whole window.
+        const tabs = message.tabIds?.length
+          ? await Promise.all(message.tabIds.map((id) => chrome.tabs.get(id).catch(() => null)))
+          : await chrome.tabs.query(message.all ? { currentWindow: true } : { active: true, currentWindow: true });
+        const eligible = tabs.filter((t) => t && /^https?:\/\//.test(t.url || ""));
         if (eligible.length === 0) throw new Error("No regular web pages (http/https) to add.");
         await runIndexJob(eligible);
         sendResponse({ ok: true });

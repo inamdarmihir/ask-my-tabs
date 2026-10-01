@@ -1,112 +1,14 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Welcome to Ask My Tabs</title>
-    <link rel="stylesheet" href="settings.css" />
+    <script src="dist/theme-init.js"></script>
+    <link rel="stylesheet" href="dist/ui.css" />
   </head>
   <body>
-    <header>
-      <div class="header-content ob-header">
-        <img src="icons/icon48.png" alt="" />
-        <h1>Welcome to Ask My Tabs</h1>
-        <p class="tagline">Two quick steps. You only do this once, and you can change it later in Settings.</p>
-      </div>
-    </header>
-
-    <main>
-      <section class="card" id="step-1">
-        <h2>1 · Where should your indexed pages live?</h2>
-        <p id="ob-qdrant-detected" class="detected" hidden>Found Qdrant running on this computer ✓</p>
-
-        <div class="radio-group">
-          <label>
-            <input type="radio" name="obQdrantMode" value="cloud" checked />
-            <strong>Qdrant Cloud</strong> <span class="badge recommended">No install</span>
-            <div class="radio-hint">Free tier at <a href="https://cloud.qdrant.io" target="_blank">cloud.qdrant.io</a>. Page text is stored in your own cluster.</div>
-          </label>
-          <label>
-            <input type="radio" name="obQdrantMode" value="local" />
-            <strong>This computer (Docker)</strong> <span class="badge">Private</span>
-            <div class="radio-hint">Run <code>docker compose up -d</code> in the project folder. Nothing leaves your machine.</div>
-          </label>
-        </div>
-
-        <div id="ob-qdrant-cloud-fields" class="sub-fields">
-          <div class="field">
-            <label for="ob-qdrant-url">Cluster URL</label>
-            <input type="url" id="ob-qdrant-url" placeholder="https://abc.qdrant.io:6333" />
-          </div>
-          <div class="field">
-            <label for="ob-qdrant-apikey">API key</label>
-            <input type="password" id="ob-qdrant-apikey" placeholder="Qdrant API key" />
-          </div>
-        </div>
-
-        <div class="actions-row end">
-          <span id="ob-qdrant-status" class="status-badge"></span>
-          <button id="ob-step1-btn" class="primary">Test &amp; continue →</button>
-        </div>
-      </section>
-
-      <section class="card locked" id="step-2">
-        <h2>2 · Who writes your answers?</h2>
-
-        <div class="radio-group">
-          <label>
-            <input type="radio" name="obLlmType" value="api" checked />
-            <strong>An AI provider</strong> <span class="badge recommended">Fastest</span>
-            <div class="radio-hint">Needs an API key. Your question and the matching snippets are sent to the provider.</div>
-          </label>
-          <label>
-            <input type="radio" name="obLlmType" value="local" />
-            <strong>On this device</strong> <span class="badge">Private</span>
-            <div class="radio-hint">Runs on your GPU (WebGPU). One-time download of about 0.5 GB.</div>
-          </label>
-        </div>
-
-        <div id="ob-llm-api-fields" class="sub-fields">
-          <div class="field">
-            <label for="ob-llm-provider">Provider</label>
-            <select id="ob-llm-provider">
-              <option value="openai">OpenAI</option>
-              <option value="groq">Groq</option>
-              <option value="gemini">Google Gemini</option>
-            </select>
-            <div class="link-hint">Need a key? <a id="ob-llm-key-url" href="https://platform.openai.com/api-keys" target="_blank">Get one here</a></div>
-          </div>
-          <div class="field">
-            <label for="ob-llm-apikey">API key</label>
-            <input type="password" id="ob-llm-apikey" placeholder="API key" />
-          </div>
-          <div class="field">
-            <label for="ob-llm-model">Model <span class="optional">(optional)</span></label>
-            <input type="text" id="ob-llm-model" placeholder="Leave blank for the default" />
-            <div class="field-hint" id="ob-llm-model-hint"></div>
-          </div>
-          <div class="test-row">
-            <button id="ob-test-llm-btn" class="secondary">Test key</button>
-            <span id="ob-llm-status" class="status-badge"></span>
-          </div>
-        </div>
-
-        <div class="actions-row end">
-          <button id="ob-step2-btn" class="primary">Finish ✓</button>
-        </div>
-      </section>
-
-      <section class="card done-card" id="step-3" hidden>
-        <h2>You're all set</h2>
-        <ol class="howto">
-          <li>Open a page you're reading and click the <strong>Ask My Tabs</strong> icon.</li>
-          <li>Press <strong>+ Add current tab</strong>. The first add downloads a small embedding model once.</li>
-          <li>Add a few more, then ask a question across all of them.</li>
-        </ol>
-        <p class="hint">Tip: pin the extension from the puzzle-piece menu so it's always one click away.</p>
-        <button id="ob-done-btn" class="primary large">Close this tab</button>
-      </section>
-    </main>
-
+    <div id="root"></div>
     <script type="module" src="dist/onboarding.bundle.js"></script>
   </body>
 </html>

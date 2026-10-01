@@ -1,114 +1,210 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { CloseIcon, TrashIcon } from "./icons.jsx";
-import { formatMs, send, timeAgo } from "./hooks.js";
+import React, { startTransition, useEffect, useOptimistic, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Check, ChevronRight, CircleCheck, Globe, Layers, LibraryBig, Plus, X } from "lucide-react";
+import { cn } from "../ui/cn.js";
+import { Button } from "../ui/button.jsx";
+import { Checkbox, Segmented } from "../ui/form.jsx";
+import { Badge, EmptyState, Notice, SiteAvatar } from "../ui/primitives.jsx";
+import { Progress, Stepper } from "../ui/progress.jsx";
+import { Tip } from "../ui/overlay.jsx";
+import { toast } from "../ui/toaster.jsx";
+import { formatMs, send, useTabs } from "../ui/hooks.js";
+import { JOB_STAGES, jobDetail, jobPercent, stageIndex } from "../ui/job.js";
+import { Library } from "./Library.jsx";
 
-function JobBar({ job }) {
+const domainOf = (url) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+};
+
+// ─── Indexing job ───────────────────────────────────────────────────────────
+function JobCard({ job, dismissed, onDismiss }) {
   if (!job) return null;
   if (job.running) {
-    const cur = job.current;
-    const pct = cur?.total ? Math.round((cur.done / cur.total) * 100) : 0;
-    const detail = !cur ? "Starting..." : cur.stage === "embedding" ? `Embedding chunk ${cur.done}/${cur.total}` : cur.stage === "saving" ? "Saving" : "Reading page";
+    const pct = jobPercent(job);
     return (
-      <div className="job" role="status">
-        <div className="job-top">
-          <span className="spinner" />
-          <span className="job-title">Page {Math.min(job.done + 1, job.total)} of {job.total}{cur?.title ? ` · ${cur.title}` : ""}</span>
+      <div role="status" aria-live="polite" className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-card p-3 shadow-soft">
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="truncate text-[13px] font-medium">
+            Page {Math.min(job.done + 1, job.total)} of {job.total}
+            {job.current?.title ? <span className="font-normal text-muted-foreground"> · {job.current.title}</span> : null}
+          </p>
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{pct}%</span>
         </div>
-        <div className="progress"><div style={{ width: `${cur?.stage === "embedding" ? pct : cur?.stage === "saving" ? 100 : 6}%` }} /></div>
-        <div className="job-detail">{detail}. You can close this popup, indexing continues.</div>
+        <Progress value={pct} aria-label="Indexing progress" />
+        <Stepper steps={JOB_STAGES} current={stageIndex(job)} />
+        <p className="text-xs text-muted-foreground">{jobDetail(job)}. You can close this popup, indexing continues.</p>
       </div>
     );
   }
-  if (!job.finishedAt) return null;
+  if (!job.finishedAt || dismissed === job.finishedAt) return null;
   const parts = [];
   if (job.added) parts.push(`${job.added} added`);
   if (job.unchanged) parts.push(`${job.unchanged} unchanged`);
   if (job.failures.length) parts.push(`${job.failures.length} failed`);
+  const allFailed = job.failures.length > 0 && !job.added && !job.unchanged;
   return (
-    <div className={`job job-done ${job.failures.length && !job.added && !job.unchanged ? "job-bad" : ""}`}>
-      {parts.join(" · ") || "Nothing to add"} in {formatMs(job.finishedAt - job.startedAt)}
-      {job.failures[0] && <div className="job-detail">{job.failures[0].title}: {job.failures[0].error}</div>}
-    </div>
+    <Notice
+      tone={allFailed ? "danger" : job.failures.length ? "warning" : "success"}
+      action={
+        <Button variant="ghost" size="icon-sm" className="-my-1 -mr-1.5" onClick={() => onDismiss(job.finishedAt)} aria-label="Dismiss">
+          <X />
+        </Button>
+      }
+    >
+      <p className="font-medium">
+        {parts.join(" · ") || "Nothing to add"} in {formatMs(job.finishedAt - job.startedAt)}
+      </p>
+      {job.failures.slice(0, 3).map((f, i) => (
+        <p key={i} className="mt-0.5 opacity-90">{f.title}: {f.error}</p>
+      ))}
+    </Notice>
   );
 }
 
-function Library({ qdrantUp, refreshKey, filter, setFilter, onDeleted }) {
-  const [sources, setSources] = useState([]);
-  const [domains, setDomains] = useState([]);
-  const [error, setError] = useState(null);
-  const [confirming, setConfirming] = useState(null);
+// ─── Working set ────────────────────────────────────────────────────────────
+function TabRow({ tab, added, selected, onToggle, disabled, tag }) {
+  const domain = domainOf(tab.url);
+  return (
+    <li>
+      <label className={cn("flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-muted", (added || disabled) && "cursor-default opacity-70 hover:bg-transparent")}>
+        <Checkbox checked={added || selected} disabled={added || disabled} onCheckedChange={onToggle} aria-label={`Select ${tab.title}`} />
+        <SiteAvatar domain={domain} className="size-6 text-[11px]" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium">{tab.title || tab.url}</span>
+          <span className="block truncate text-[11px] text-muted-foreground">{domain}</span>
+        </span>
+        {tag}
+        {added && <Badge tone="success"><Check /> Added</Badge>}
+      </label>
+    </li>
+  );
+}
 
-  const load = useCallback(async () => {
-    if (!qdrantUp) return;
-    await send({ type: "ENSURE_OFFSCREEN" });
-    const f = {};
-    if (filter.domain) f.domain = filter.domain;
-    if (filter.date) f.indexedAfter = new Date(filter.date).getTime();
-    const res = await send({ type: "LIST_LIBRARY", filter: f }).catch(() => null);
-    if (!res?.ok) {
-      setError(res?.qdrant?.message || "Couldn't load the library.");
-      return;
-    }
-    setError(null);
-    setSources(res.sources);
-    setDomains((prev) => Array.from(new Set([...prev, ...res.sources.map((s) => s.domain)])).sort());
-  }, [qdrantUp, filter.domain, filter.date]);
+function WorkingSet({ workingSet, running, onStart, onRemove }) {
+  const { current, open } = useTabs();
+  const [picked, setPicked] = useState(() => new Set());
+  const [showTabs, setShowTabs] = useState(false);
+  const [items, removeOptimistic] = useOptimistic(workingSet, (list, tabId) => list.filter((t) => t.tabId !== tabId));
+  const addedTabIds = new Set(workingSet.map((w) => w.tabId));
+  const others = open.filter((t) => t.id !== current?.id);
+  const addable = others.filter((t) => !addedTabIds.has(t.id));
+  const currentAdded = current && addedTabIds.has(current.id);
+  const selected = [...picked].filter((id) => addable.some((t) => t.id === id));
 
+  // Open the tab list by default while the working set is empty, so the next step is visible.
+  const opened = useRef(false);
   useEffect(() => {
-    load();
-  }, [load, refreshKey]);
-
-  const del = async (s) => {
-    const res = await send({ type: "DELETE_FROM_LIBRARY", url: s.canonicalUrl }).catch(() => null);
-    setConfirming(null);
-    if (!res?.ok) {
-      setError(`Couldn't delete: ${res?.qdrant?.message || res?.error || "unknown error"}`);
-      return;
+    if (!opened.current && others.length && workingSet.length === 0) {
+      opened.current = true;
+      setShowTabs(true);
     }
-    onDeleted(s);
-    load();
-  };
+  }, [others.length, workingSet.length]);
+
+  const toggle = (id, on) => setPicked((s) => {
+    const next = new Set(s);
+    on ? next.add(id) : next.delete(id);
+    return next;
+  });
 
   return (
-    <div className="library">
-      <div className="filters">
-        <select value={filter.domain} onChange={(e) => setFilter({ ...filter, domain: e.target.value })} aria-label="Filter by domain">
-          <option value="">All domains</option>
-          {domains.map((d) => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <input type="date" value={filter.date} onChange={(e) => setFilter({ ...filter, date: e.target.value })} title="Only sources indexed on or after this date" />
-        {(filter.domain || filter.date) && <button className="icon-btn small" onClick={() => setFilter({ domain: "", date: "" })} title="Clear filters"><CloseIcon /></button>}
-      </div>
-      <p className="hint">The Library is everything you've indexed, kept in Qdrant across restarts. Filters here also narrow "Library" questions.</p>
-      {error && <div className="error-box">{error}</div>}
-      {!error && sources.length === 0 && <p className="empty">Nothing in the library yet.</p>}
-      <ul className="rows">
-        {sources.map((s) => (
-          <li key={s.sourceKey} className="row">
-            <div className="row-main">
-              <span className="row-title" title={s.canonicalUrl}>{s.title || s.canonicalUrl}</span>
-              <span className="row-sub">{s.domain} · {timeAgo(s.indexedAt)} · {s.chunkCount} chunks</span>
-            </div>
-            {confirming === s.sourceKey ? (
-              <div className="confirm">
-                <button className="btn btn-danger btn-sm" onClick={() => del(s)}>Delete for good</button>
-                <button className="btn btn-ghost btn-sm" onClick={() => setConfirming(null)}>Cancel</button>
-              </div>
-            ) : (
-              <button className="icon-btn small" onClick={() => setConfirming(s.sourceKey)} title="Delete from library (permanent)" aria-label={`Delete ${s.title} from library`}><TrashIcon /></button>
+    <div className="flex flex-col gap-4">
+      {current ? (
+        <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card p-2.5 shadow-soft">
+          <SiteAvatar domain={domainOf(current.url)} className="size-8" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium">{current.title || current.url}</p>
+            <p className="truncate text-[11px] text-muted-foreground">This tab · {domainOf(current.url)}</p>
+          </div>
+          {currentAdded ? (
+            <Badge tone="success"><CircleCheck /> Added</Badge>
+          ) : (
+            <Button size="sm" disabled={running} onClick={() => onStart([current.id])}>
+              <Plus /> Add
+            </Button>
+          )}
+        </div>
+      ) : (
+        <p className="rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">Switch to a web page to add it, or pick from your open tabs below.</p>
+      )}
+
+      <section>
+        <h3 className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          Working set
+          {items.length > 0 && <Badge tone="accent">{items.length}</Badge>}
+        </h3>
+        {items.length === 0 ? (
+          <EmptyState icon={Layers} title="No pages yet">Add the tab you're on, then ask a question about it.</EmptyState>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            <AnimatePresence initial={false}>
+              {items.map((t) => (
+                <motion.li key={t.sourceKey} layout initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.97, height: 0 }} transition={{ duration: 0.18 }} className="flex items-center gap-2.5 rounded-xl border border-border bg-card p-2">
+                  <SiteAvatar domain={t.domain} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-medium" title={t.canonicalUrl}>{t.title || t.canonicalUrl}</p>
+                    <p className="truncate text-[11px] text-muted-foreground">{t.domain}</p>
+                  </div>
+                  <Tip label="Remove from working set (keeps the library copy)">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${t.title}`}
+                      onClick={() => startTransition(async () => {
+                        removeOptimistic(t.tabId);
+                        await onRemove(t.tabId);
+                      })}
+                    >
+                      <X />
+                    </Button>
+                  </Tip>
+                </motion.li>
+              ))}
+            </AnimatePresence>
+          </ul>
+        )}
+      </section>
+
+      {others.length > 0 && (
+        <section>
+          <button type="button" onClick={() => setShowTabs((v) => !v)} aria-expanded={showTabs} className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRight className={cn("size-3.5 transition-transform", showTabs && "rotate-90")} />
+            Other open tabs ({others.length})
+          </button>
+          <AnimatePresence initial={false}>
+            {showTabs && (
+              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                <ul className="mt-1.5 flex flex-col">
+                  {others.map((t) => (
+                    <TabRow key={t.id} tab={t} added={addedTabIds.has(t.id)} selected={picked.has(t.id)} disabled={running} onToggle={(on) => toggle(t.id, !!on)} />
+                  ))}
+                </ul>
+                <div className="mt-2 flex gap-2">
+                  <Button size="sm" disabled={running || selected.length === 0} onClick={() => { onStart(selected); setPicked(new Set()); }}>
+                    <Plus /> Add {selected.length ? `${selected.length} selected` : "selected"}
+                  </Button>
+                  <Button variant="outline" size="sm" disabled={running || addable.length === 0} onClick={() => onStart(open.map((t) => t.id))} title="Index every web page open in this window">
+                    Add all {open.length} tabs
+                  </Button>
+                </div>
+              </motion.div>
             )}
-          </li>
-        ))}
-      </ul>
+          </AnimatePresence>
+        </section>
+      )}
     </div>
   );
 }
 
 export function Pages({ workingSet, job, qdrantUp, filter, setFilter, onRemove, onLibraryDeleted }) {
-  const [error, setError] = useState(null);
+  const [section, setSection] = useState("set");
   const [refreshKey, setRefreshKey] = useState(0);
-  const [showLibrary, setShowLibrary] = useState(false);
-  const wasRunning = React.useRef(false);
+  const [dismissed, setDismissed] = useState(null);
+  const wasRunning = useRef(false);
+  const running = !!job?.running;
 
   // Refresh the library when a job finishes, including one that finished while the popup was closed.
   useEffect(() => {
@@ -116,51 +212,35 @@ export function Pages({ workingSet, job, qdrantUp, filter, setFilter, onRemove, 
     wasRunning.current = !!job?.running;
   }, [job?.running]);
 
-  const start = async (all) => {
-    setError(null);
+  const start = async (tabIds) => {
     await send({ type: "ENSURE_OFFSCREEN" }).catch(() => {});
     send({ type: "WARM_EMBEDDER" }).catch(() => {});
-    const res = await send({ type: "START_INDEX_JOB", all }).catch((e) => ({ ok: false, error: String(e) }));
-    if (!res?.ok) setError(res.error);
+    const res = await send({ type: "START_INDEX_JOB", tabIds }).catch((e) => ({ ok: false, error: String(e) }));
+    if (!res?.ok) toast.error(res?.error || "Couldn't start indexing.");
   };
-  const running = !!job?.running;
 
   return (
-    <div className="pages">
-      <section>
-        <div className="section-head">
-          <h2>Working set</h2>
-          <div className="btn-row">
-            <button className="btn btn-primary btn-sm" disabled={running} onClick={() => start(false)}>+ Add this tab</button>
-            <button className="btn btn-ghost btn-sm" disabled={running} onClick={() => start(true)} title="Index every web page open in this window">Add all tabs</button>
-          </div>
-        </div>
-        <JobBar job={job} />
-        {error && <div className="error-box">{error}</div>}
-        {workingSet.length === 0 ? (
-          <p className="empty">No pages yet. Add the tab you're on, then ask a question.</p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-3 pt-3">
+        <Segmented
+          value={section}
+          onValueChange={setSection}
+          label="Pages section"
+          className="w-full [&>button]:flex-1"
+          options={[
+            { value: "set", label: (<><Layers className="size-3.5" />Working set</>) },
+            { value: "library", label: (<><LibraryBig className="size-3.5" />Library</>) },
+          ]}
+        />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 [scrollbar-gutter:stable]">
+        <JobCard job={job} dismissed={dismissed} onDismiss={setDismissed} />
+        {section === "set" ? (
+          <WorkingSet workingSet={workingSet} running={running} onStart={start} onRemove={onRemove} />
         ) : (
-          <ul className="rows">
-            {workingSet.map((t) => (
-              <li key={t.sourceKey} className="row">
-                <div className="row-main">
-                  <span className="row-title" title={t.canonicalUrl}>{t.title || t.canonicalUrl}</span>
-                  <span className="row-sub">{t.domain}</span>
-                </div>
-                <button className="icon-btn small" onClick={() => onRemove(t.tabId)} title="Remove from working set (keeps the library copy)" aria-label={`Remove ${t.title}`}><CloseIcon /></button>
-              </li>
-            ))}
-          </ul>
+          <Library qdrantUp={qdrantUp} refreshKey={refreshKey} filter={filter} setFilter={setFilter} onDeleted={onLibraryDeleted} />
         )}
-      </section>
-
-      <section>
-        <button className={`section-toggle ${showLibrary ? "open" : ""}`} onClick={() => setShowLibrary((v) => !v)} aria-expanded={showLibrary}>
-          <span className="chev"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg></span>
-          <h2>Library</h2>
-        </button>
-        {showLibrary && <Library qdrantUp={qdrantUp} refreshKey={refreshKey} filter={filter} setFilter={setFilter} onDeleted={onLibraryDeleted} />}
-      </section>
+      </div>
     </div>
   );
 }

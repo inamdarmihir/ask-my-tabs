@@ -1,127 +1,14 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ask My Tabs Settings</title>
-    <link rel="stylesheet" href="settings.css" />
+    <script src="dist/theme-init.js"></script>
+    <link rel="stylesheet" href="dist/ui.css" />
   </head>
   <body>
-    <header>
-      <div class="header-content">
-        <h1>Ask My Tabs Settings</h1>
-        <p class="tagline">Configure your AI and vector storage.</p>
-      </div>
-    </header>
-
-    <main>
-      <section class="card">
-        <h2>Vector Storage</h2>
-        <p class="hint">Where your indexed tabs are stored and searched.</p>
-        
-        <div class="radio-group">
-          <label>
-            <input type="radio" name="qdrantMode" value="cloud" checked />
-            <strong>Qdrant Cloud</strong> <span class="badge recommended">Recommended</span>
-            <div class="radio-hint">Free tier available at <a href="https://cloud.qdrant.io" target="_blank">cloud.qdrant.io</a>. No Docker required.</div>
-          </label>
-          <label>
-            <input type="radio" name="qdrantMode" value="local" />
-            <strong>Local Docker</strong>
-            <div class="radio-hint">Private, offline. Requires running <code>docker compose up -d</code>.</div>
-          </label>
-        </div>
-
-        <div id="qdrant-cloud-fields" class="sub-fields">
-          <div class="field">
-            <label for="qdrant-url">Cluster URL</label>
-            <input type="url" id="qdrant-url" placeholder="https://abc.qdrant.io:6333" />
-          </div>
-          <div class="field">
-            <label for="qdrant-apikey">API Key</label>
-            <input type="password" id="qdrant-apikey" placeholder="Enter your Qdrant API key" />
-          </div>
-        </div>
-
-        <div class="test-row">
-          <button id="test-qdrant-btn" class="secondary">Test Connection</button>
-          <span id="qdrant-status" class="status-badge">⚪ Untested</span>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Language Model</h2>
-        <p class="hint">Powers the final answer generation.</p>
-        
-        <div class="radio-group">
-          <label>
-            <input type="radio" name="llmType" value="api" checked />
-            <strong>API Key</strong> <span class="badge recommended">Recommended</span>
-            <div class="radio-hint">Fast, lightweight. Send snippets to a cloud provider.</div>
-          </label>
-          <label>
-            <input type="radio" name="llmType" value="local" />
-            <strong>Local (WebLLM)</strong>
-            <div class="radio-hint">Private, on-device. Requires a capable GPU and ~0.5 GB one-time model download.</div>
-          </label>
-        </div>
-
-        <div id="llm-api-fields" class="sub-fields">
-          <div class="field">
-            <label for="llm-provider">Provider</label>
-            <select id="llm-provider">
-              <option value="openai">OpenAI</option>
-              <option value="groq">Groq</option>
-              <option value="gemini">Google Gemini</option>
-            </select>
-            <div class="link-hint">Get an API key: <a id="llm-key-url" href="#" target="_blank">Here</a></div>
-          </div>
-          <div class="field">
-            <label for="llm-apikey">API Key</label>
-            <input type="password" id="llm-apikey" placeholder="Enter API key" />
-          </div>
-          <div class="field">
-            <label for="llm-model">Model (Optional)</label>
-            <input type="text" id="llm-model" list="llm-model-list" placeholder="Leave blank for default" />
-            <datalist id="llm-model-list"></datalist>
-            <button id="list-models-btn" class="secondary" type="button" style="margin-top:6px">Load models for this key</button>
-            <div class="field-hint" id="llm-model-hint">Default: gpt-6-luna</div>
-          </div>
-          <div class="field">
-            <label for="llm-baseurl">Custom endpoint (Optional)</label>
-            <input type="url" id="llm-baseurl" placeholder="e.g. http://127.0.0.1:11434/v1 (Ollama, LM Studio, Azure, a proxy)" />
-            <div class="field-hint">Any OpenAI-compatible base URL. Leave blank to use the provider's own.</div>
-          </div>
-          <div class="field">
-            <label for="agent-mode">Answer strategy</label>
-            <select id="agent-mode">
-              <option value="deep">Deep agent (recommended): plans, searches and reads your pages as needed</option>
-              <option value="pipeline">Fast pipeline: one search or read, then answer</option>
-            </select>
-            <div class="field-hint">The deep agent makes several model calls per question and is used with OpenAI-compatible providers only. It falls back to the fast pipeline if anything goes wrong.</div>
-          </div>
-          <div class="test-row">
-            <button id="test-llm-btn" class="secondary">Test key</button>
-            <span id="llm-status" class="status-badge"></span>
-          </div>
-        </div>
-
-        <div id="llm-local-fields" class="sub-fields" hidden>
-          <div class="warning-box">
-            <strong>WebGPU Required:</strong> This uses Chrome's built-in WebGPU API. It will not work on older machines, some enterprise laptops, or devices without a dedicated/modern integrated GPU.
-          </div>
-        </div>
-      </section>
-
-      <div class="actions-row">
-        <button id="save-btn" class="primary large">Save Settings</button>
-        <span id="save-status" class="status-fade">Saved successfully!</span>
-      </div>
-      
-      <div class="footer-links">
-        <a href="#" id="reset-btn">Reset to defaults</a>
-      </div>
-    </main>
-
+    <div id="root"></div>
     <script type="module" src="dist/settings.bundle.js"></script>
   </body>
 </html>

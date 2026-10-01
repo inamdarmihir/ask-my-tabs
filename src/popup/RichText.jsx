@@ -1,11 +1,52 @@
 import React from "react";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/overlay.jsx";
+import { SiteAvatar } from "../ui/primitives.jsx";
+import { cn } from "../ui/cn.js";
 
 // Small, dependency-free renderer for the subset of Markdown a small model actually emits:
-// paragraphs, "-"/"1." lists, **bold**, `code`. [n] becomes a clickable citation chip when n
-// refers to a real snippet; out-of-range numbers are flagged instead of rendered as dead links.
+// paragraphs, "-"/"1." lists, **bold**, `code`. [n] becomes a citation chip when n refers to a real
+// snippet (hover for a preview, click to jump to the source); out-of-range numbers are flagged
+// instead of rendered as dead links.
 const TOKEN = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[\d+\])/g;
 
-function inline(text, citationCount, onCite, keyPrefix) {
+const chipClass = "mx-px inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-md px-1 align-[1px] text-[10.5px] font-semibold leading-none";
+
+function Cite({ n, citation, onCite }) {
+  if (!citation) {
+    return (
+      <span className={cn(chipClass, "bg-destructive-soft text-destructive")} title="This number doesn't match any supplied snippet">
+        {n}
+      </span>
+    );
+  }
+  return (
+    <HoverCard openDelay={120} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          onClick={() => onCite(n)}
+          aria-label={`Source ${n}: ${citation.tabTitle || citation.domain}`}
+          className={cn(chipClass, "bg-accent text-accent-foreground transition-colors hover:bg-primary hover:text-primary-foreground")}
+        >
+          {n}
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent>
+        <div className="flex items-center gap-2">
+          <SiteAvatar domain={citation.domain} className="size-6 text-[11px]" />
+          <div className="min-w-0">
+            <p className="truncate text-[13px] font-medium">{citation.tabTitle || citation.domain}</p>
+            <p className="truncate text-[11px] text-muted-foreground">{citation.domain}</p>
+          </div>
+        </div>
+        <p className="mt-2 line-clamp-5 border-l-2 border-primary/40 pl-2 text-pretty text-xs text-muted-foreground">{citation.text}</p>
+        <p className="mt-2 text-[11px] text-muted-foreground">Click to see this source below</p>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function inline(text, citations, onCite, keyPrefix) {
   const out = [];
   let last = 0;
   let i = 0;
@@ -17,13 +58,7 @@ function inline(text, citationCount, onCite, keyPrefix) {
     else if (tok[0] === "`") out.push(<code key={key}>{tok.slice(1, -1)}</code>);
     else {
       const n = Number(tok.slice(1, -1));
-      out.push(
-        n >= 1 && n <= citationCount ? (
-          <button key={key} className="cite" onClick={() => onCite(n)} title={`Show source ${n}`}>{n}</button>
-        ) : (
-          <span key={key} className="cite cite-invalid" title="This number doesn't match any supplied snippet">{n}</span>
-        ),
-      );
+      out.push(<Cite key={key} n={n} citation={citations.find((c) => c.index === n) || null} onCite={onCite} />);
     }
     last = m.index + tok.length;
   }
@@ -31,7 +66,7 @@ function inline(text, citationCount, onCite, keyPrefix) {
   return out;
 }
 
-export function RichText({ text, citationCount = 0, onCite = () => {} }) {
+export function RichText({ text, citations = [], onCite = () => {} }) {
   const blocks = [];
   let list = null;
   const flush = () => {
@@ -64,16 +99,16 @@ export function RichText({ text, citationCount = 0, onCite = () => {} }) {
   flush();
 
   return (
-    <div className="rich">
+    <div className="prose-answer">
       {blocks.map((b) =>
         b.h !== undefined ? (
-          <h3 key={b.key}>{inline(b.h, citationCount, onCite, b.key)}</h3>
+          <h3 key={b.key}>{inline(b.h, citations, onCite, b.key)}</h3>
         ) : b.p !== undefined ? (
-          <p key={b.key}>{inline(b.p, citationCount, onCite, b.key)}</p>
+          <p key={b.key}>{inline(b.p, citations, onCite, b.key)}</p>
         ) : b.ordered ? (
-          <ol key={b.key}>{b.items.map((t, i) => <li key={i}>{inline(t, citationCount, onCite, `${b.key}-${i}`)}</li>)}</ol>
+          <ol key={b.key}>{b.items.map((t, i) => <li key={i}>{inline(t, citations, onCite, `${b.key}-${i}`)}</li>)}</ol>
         ) : (
-          <ul key={b.key}>{b.items.map((t, i) => <li key={i}>{inline(t, citationCount, onCite, `${b.key}-${i}`)}</li>)}</ul>
+          <ul key={b.key}>{b.items.map((t, i) => <li key={i}>{inline(t, citations, onCite, `${b.key}-${i}`)}</li>)}</ul>
         ),
       )}
     </div>

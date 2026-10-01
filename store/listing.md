@@ -5,7 +5,7 @@ Turn the tabs you're reading into a private, AI-powered knowledge base.
 Ask My Tabs is an open-source extension that lets you ask questions across multiple web pages at once, backed by a real vector database (Qdrant).
 
 ## How it works
-1. **Read:** As you browse research papers, documentation, or articles, click "+ Add current tab".
+1. **Read:** As you browse research papers, documentation, or articles, open the popup and add the current tab, or tick other open tabs to add.
 2. **Index:** The extension extracts the text and embeds it directly in your browser. The embedded text is saved to your Qdrant vector database.
 3. **Ask:** Ask a question. An AI agent plans a search, retrieves the most relevant snippets, and writes a synthesized answer with numbered citations pointing back to the exact tabs.
 

@@ -13,7 +13,7 @@ answer with numbered citations that link back to the source tab.
 You bring your own backend. There is no Ask My Tabs server: the extension talks directly to a
 vector database and a language model that you choose.
 
-<img src="docs/screenshot-popup.png" alt="Ask My Tabs popup showing the model banner, working set, and question box" width="360" />
+<img src="docs/screenshot-popup.png" alt="Ask My Tabs popup showing a cited answer with hoverable citation chips, the working set count and the scope switch" width="360" />
 
 ## Features
 
@@ -32,7 +32,15 @@ vector database and a language model that you choose.
 - **Structure-aware extraction.** Pages are extracted with their line structure, and feeds such as
   Hacker News or Reddit are detected and chunked so each item stays together with its points and stats.
 - **Chat threads.** Conversations are saved (up to 60), survive closing the popup or restarting the
-  browser, and keep follow-up context. Browse them from the history button.
+  browser, and keep follow-up context. Browse them, grouped by date and searchable, from the history button.
+- **Guided setup with live progress.** A checklist walks through the database, the answer model and
+  your first page. The on-device model download and page indexing show real progress bars (percent,
+  MB, stage), and keep going if you close the popup.
+- **Pick exactly which tabs to add.** Add the current tab, tick specific open tabs, or add them all,
+  without leaving the popup.
+- **Citations you can preview.** Hover a citation for the source excerpt; click it to jump to the
+  page card, check whether the page changed, or switch to the live tab.
+- **Light, dark or system theme**, from the popup menu or Settings.
 - **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2, b=0.75,
   IDF computed by Qdrant from live collection statistics) are fused with weighted Reciprocal Rank Fusion in a single Query API call.
   Dense-only and sparse-only modes are available in settings.
@@ -61,8 +69,8 @@ vector database and a language model that you choose.
    [Configuration](#configuration)).
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Click **Load unpacked** and select this repository folder (the one containing `manifest.json`).
-4. Follow the onboarding page, or open **Settings** from the popup (⚙) to choose your backends.
-5. Open a few pages, click **+ Add current tab** for each, type a question, and press **Ask**.
+4. Follow the onboarding page, or open **Settings** from the popup's **...** menu to choose your backends.
+5. Open a few pages, open the popup, choose **Pages**, add the tabs you want, then ask a question in **Chat**.
 
 Requirements: a Chromium browser with WebGPU (Chrome 113+ or an equivalent Edge build) if you use
 the on-device language model. Hosted language models do not need WebGPU.
@@ -184,20 +192,22 @@ npm run test:integration   # integration tests against live Qdrant (docker compo
 npm run eval               # retrieval eval on BEIR SciFact; needs Qdrant, writes eval/RESULTS.md
 ```
 
-After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`.
+After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`. The build
+compiles Tailwind CSS (`src/ui/styles.css` to `dist/ui.css`) and bundles the React pages with esbuild.
 
 ### Project layout
 
 ```
 manifest.json            Extension manifest (MV3)
-popup.* / settings.* / onboarding.html    UI pages
+popup.html / settings.html / onboarding.html    Page shells; the UI is React (src/)
 offscreen.html           Hosts the models and agent loop
 privacy-policy.html      Privacy policy page
 src/
   background.js          Service worker: tab access, offscreen lifecycle
   offscreen.js           Embedder, LLM, and agent host (chooses deep agent or pipeline)
-  popup/                 React popup: chat, history, pages, rich text
-  settings.js / onboarding.js
+  popup/                 Popup: chat, pages, library, history, setup checklist
+  settings/, onboarding/ Settings page and first-run wizard
+  ui/                    Shared UI: Tailwind v4 theme (styles.css), Radix-based components, hooks
   lib/
     deep-agent.js        deepagents/LangGraph research agent, tools, citation registry
     agent.js             Fixed pipeline: multi-hop retrieval and answer generation

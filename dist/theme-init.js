@@ -1,0 +1,1 @@
+(()=>{var o="amt-theme";var s=()=>window.matchMedia("(prefers-color-scheme: dark)");function r(){try{return localStorage.getItem(o)||"system"}catch{return"system"}}function t(e=r()){let n=e==="dark"||e==="system"&&s().matches;document.documentElement.classList.toggle("dark",n)}t();})();

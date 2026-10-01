@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getConfig, ALL_API_PROVIDERS } from "../lib/config.js";
+import { getThemePref, setThemePref, subscribeTheme } from "./theme.js";
 
 export function send(message) {
   return chrome.runtime.sendMessage(message);
+}
+
+export function useThemePref() {
+  return [useSyncExternalStore(subscribeTheme, getThemePref), setThemePref];
 }
 
 // Live view of one chrome.storage key. `initial` must be a stable reference (module constant).
@@ -86,8 +91,11 @@ export function useQdrant() {
 }
 
 // Which answer model is active, and whether the on-device one is downloaded.
+// `progress` is {pct: 0-100|null, phase: "download"|"load"|"init", mb, detail} while the on-device
+// model loads. The offscreen document remembers the latest value, so reopening the popup mid-download
+// still shows a live bar.
 export function useModel() {
-  const [state, setState] = useState({ label: null, ready: false, progress: null, error: null, loading: false });
+  const [state, setState] = useState({ label: null, onDevice: true, ready: false, progress: null, error: null, loading: false });
   const refresh = useCallback(async () => {
     let label = null;
     try {
@@ -97,13 +105,20 @@ export function useModel() {
     } catch {
       /* on-device */
     }
-    let ready = false;
+    let info = null;
     try {
-      ready = !!(await send({ type: "GET_STATE" }))?.modelsReady;
+      info = await send({ type: "GET_STATE" });
     } catch {
-      /* not ready */
+      /* offscreen not up yet */
     }
-    setState((s) => ({ ...s, label, ready }));
+    setState((s) => ({
+      ...s,
+      label,
+      onDevice: !label,
+      ready: !!info?.modelsReady,
+      loading: s.loading || !!info?.llmLoading,
+      progress: info?.llmLoading ? info.llmProgress || s.progress : s.progress,
+    }));
   }, []);
   useEffect(() => {
     refresh();
@@ -111,19 +126,41 @@ export function useModel() {
   useRuntimeMessages((m) => {
     // Only the on-device answer model is a big download; the embedder ships in the package.
     if (m.type === "MODEL_PROGRESS" && m.stage === "llm") {
-      setState((s) => ({ ...s, progress: typeof m.detail === "string" ? m.detail : `Loading ${m.stage}...` }));
+      setState((s) => ({ ...s, loading: true, progress: { pct: m.pct ?? null, phase: m.phase ?? "download", mb: m.mb ?? null, detail: m.detail ?? null } }));
     } else if (m.type === "MODELS_READY") {
       setState((s) => ({ ...s, ready: true, progress: null, error: null, loading: false }));
     } else if (m.type === "MODEL_ERROR") {
-      setState((s) => ({ ...s, error: m.error, loading: false }));
+      setState((s) => ({ ...s, error: m.error, loading: false, progress: null }));
     }
   });
   const download = useCallback(async () => {
-    setState((s) => ({ ...s, loading: true, error: null }));
+    setState((s) => ({ ...s, loading: true, error: null, progress: { pct: null, phase: "init", mb: null, detail: "Starting..." } }));
     await send({ type: "ENSURE_OFFSCREEN" });
     send({ type: "LOAD_MODELS" }).catch(() => {});
   }, []);
   return [state, download, refresh];
+}
+
+// The page under the popup, plus how many regular web pages are open in this window.
+export function useTabs() {
+  const [state, setState] = useState({ current: null, open: [] });
+  const refresh = useCallback(async () => {
+    try {
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const open = tabs.filter((t) => /^https?:\/\//.test(t.url || ""));
+      const current = open.find((t) => t.active) || null;
+      setState({ current, open });
+    } catch {
+      /* no tabs permission in this context */
+    }
+  }, []);
+  useEffect(() => {
+    refresh();
+    const events = ["onCreated", "onRemoved", "onUpdated", "onActivated"];
+    events.forEach((e) => chrome.tabs[e]?.addListener(refresh));
+    return () => events.forEach((e) => chrome.tabs[e]?.removeListener(refresh));
+  }, [refresh]);
+  return state;
 }
 
 export function formatMs(ms) {
