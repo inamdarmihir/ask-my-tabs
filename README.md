@@ -3,59 +3,163 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build](https://github.com/inamdarmihir/ask-my-tabs/actions/workflows/build.yml/badge.svg)](https://github.com/inamdarmihir/ask-my-tabs/actions/workflows/build.yml)
 ![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-informational)
+![Vector DB](https://img.shields.io/badge/vector%20db-Qdrant-dc244c)
+![Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen)
 
-**Ask questions across the web pages you are reading and get cited answers.**
+**Your tabs, cross-examined. Every answer cites the page it came from.**
 
-Ask My Tabs is a Chrome extension that turns your tabs into a searchable knowledge base. Add the
-pages you are working with, ask a question, and an agent searches across all of them and writes an
-answer with numbered citations that link back to the source tab.
+You have 30 tabs open. Three of them contain the answer. You do not remember which.
 
-You bring your own backend. There is no Ask My Tabs server: the extension talks directly to a
-vector database and a language model that you choose.
+Ask My Tabs is a Chrome extension that turns the pages you are reading into a searchable knowledge
+base. Add some tabs, ask a question in plain English, and an agent searches across all of them and
+writes an answer with numbered citations. Hover a citation to see the exact excerpt. Click it to
+jump to the page.
+
+There is no Ask My Tabs server. The extension talks directly to a vector database and a language
+model that you choose. Run both on your own machine and nothing leaves it.
 
 <img src="docs/screenshot-popup.png" alt="Ask My Tabs popup showing a cited answer with hoverable citation chips, the working set count and the scope switch" width="360" />
 
-## Features
+## Contents
 
-- **Cited answers.** Every claim is tagged `[1]`, `[2]`, ... and mapped back to the page it came
-  from. Out-of-range or invented citations are detected and flagged.
-- **Agentic RAG with deepagents.** With OpenAI or Groq (or any OpenAI-compatible endpoint), a
-  [deepagents](https://github.com/langchain-ai/deepagents) research agent on LangGraph plans with todos,
-  lists your sources, runs hybrid searches, reads whole pages, and can delegate sub-questions to a
-  `researcher` subagent. Its citations are checked against the snippets its tools actually returned.
-  If it cannot run, the fast fixed pipeline answers instead. Toggle in Settings.
-- **Fast pipeline.** The on-device model and Gemini use a fixed path: plan one to three queries,
-  retrieve, run a sufficiency check with at most one refined follow-up search, then write the answer.
-  Comparative questions are split into per-topic queries.
-- **Read mode for summaries.** "Summarize this page" style questions read the page in order within a
-  character budget instead of relying on similarity search, which returns arbitrary pieces for them.
-- **Structure-aware extraction.** Pages are extracted with their line structure, and feeds such as
-  Hacker News or Reddit are detected and chunked so each item stays together with its points and stats.
-- **Chat threads.** Conversations are saved (up to 60), survive closing the popup or restarting the
-  browser, and keep follow-up context. Browse them, grouped by date and searchable, from the history button.
-- **Guided setup with live progress.** A checklist walks through the database, the answer model and
-  your first page. The on-device model download and page indexing show real progress bars (percent,
-  MB, stage), and keep going if you close the popup.
-- **Pick exactly which tabs to add.** Add the current tab, tick specific open tabs, or add them all,
-  without leaving the popup.
-- **Citations you can preview.** Hover a citation for the source excerpt; click it to jump to the
-  page card, check whether the page changed, or switch to the live tab.
-- **Light, dark or system theme**, from the popup menu or Settings.
-- **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2, b=0.75,
-  IDF computed by Qdrant from live collection statistics) are fused with weighted Reciprocal Rank Fusion in a single Query API call.
-  Dense-only and sparse-only modes are available in settings.
-- **Source-diverse results.** Results are grouped by source, so one long page cannot crowd the
-  other tabs out of an answer.
-- **Working set or library.** Query only the tabs you added, or everything you have ever indexed.
-  Filter the library by domain or by date indexed.
-- **Durable sources.** Pages are keyed by normalized URL, not by Chrome's reusable `tabId`.
-  Re-adding an unchanged page is a no-op, and changed pages replace their previous snapshot.
-- **Flexible backends.** Local or cloud vector storage, and on-device or hosted language models,
-  including a custom OpenAI-compatible base URL (Azure, Ollama, LM Studio, a proxy).
-- **Prompt-injection guard.** Page text is passed to the model as untrusted data, with an explicit
+- [Before / after](#before--after)
+- [What you get](#what-you-get)
+- [Numbers](#numbers)
+- [How it works](#how-it-works)
+- [Install](#install)
+- [Using it](#using-it)
+- [Configuration](#configuration)
+- [Privacy](#privacy)
+- [Architecture](#architecture)
+- [Development](#development)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+
+## Before / after
+
+You ask: *"Which of these libraries supports streaming, and what did the maintainers say about
+rate limits?"*
+
+**A chatbot with no access to your tabs**
+
+> Most popular libraries support streaming. Rate limits vary by provider, so check the docs.
+
+No sources. No way to check it. It has not read the pages you are looking at.
+
+**Ask My Tabs**
+
+> The `acme-sdk` supports streaming through `client.stream()` [1], while `other-lib` only
+> streams on the paid tier [2]. A maintainer said the default limit is 60 requests per minute and
+> can be raised on request [3].
+
+Each `[n]` is a chip. Hover it to read the snippet the claim rests on. Click it to open the tab.
+If the model invents a citation number that points at nothing, the extension detects it and flags
+it instead of showing it as fact.
+
+## What you get
+
+**Answers you can verify**
+
+- **Cited answers.** Every claim is tagged `[1]`, `[2]` and mapped back to its source page.
+  Out-of-range or invented citations are detected and flagged.
+- **Citation previews.** Hover for the excerpt. Click to jump to the page card, check whether the
+  page changed since you added it, or switch to the live tab.
+- **Prompt-injection guard.** Page text reaches the model as untrusted data, with an explicit
   instruction not to follow anything inside it.
 
-## Quick start
+**An agent that actually researches**
+
+- **Deep agent.** With OpenAI, Groq, or any OpenAI-compatible endpoint, a
+  [deepagents](https://github.com/langchain-ai/deepagents) research agent on LangGraph plans with
+  todos, lists your sources, runs hybrid searches, reads whole pages, and can hand sub-questions
+  to a `researcher` subagent. Its citations are checked against the snippets its tools returned.
+- **Fast pipeline.** The on-device model and Gemini use a fixed path: plan one to three queries,
+  retrieve, check whether the snippets are enough (one refined follow-up search at most), answer.
+  Comparative questions are split into per-topic queries. If the deep agent fails, the pipeline
+  answers instead.
+- **Read mode.** "Summarize this page" questions read the page in order within a character
+  budget. Similarity search is the wrong tool for them: it returns arbitrary pieces.
+
+**Retrieval that holds up**
+
+- **Hybrid search in Qdrant.** Dense embeddings (`mdbr-leaf-ir`) and BM25 (stemmed, k1=1.2,
+  b=0.75, IDF computed by Qdrant from live collection statistics) are fused with weighted
+  Reciprocal Rank Fusion in a single Query API call. Dense-only and sparse-only modes are in
+  Settings.
+- **Source-diverse results.** Results are grouped by source, so one long page cannot crowd the
+  other tabs out of an answer.
+- **Structure-aware extraction.** Pages keep their line structure. Feeds such as Hacker News or
+  Reddit are detected and chunked so each item stays with its points and stats.
+- **Durable sources.** Pages are keyed by normalized URL, not Chrome's reusable `tabId`.
+  Re-adding an unchanged page is a no-op. A changed page replaces its old snapshot.
+
+**A UI that gets out of the way**
+
+- **Guided setup with live progress.** A checklist walks through the database, the answer model
+  and your first page. The model download and page indexing show real progress (percent, MB,
+  stage) and keep going if you close the popup.
+- **Pick exactly which tabs to add.** The current tab, specific open tabs you tick, or all of them.
+- **Working set or library.** Query only the tabs you added, or everything you have ever indexed,
+  filtered by domain or date.
+- **Chat threads.** Up to 60 saved conversations that survive restarts and keep follow-up context,
+  grouped by date and searchable.
+- **Light, dark or system theme.**
+
+**Your backends, your call**
+
+- **Vector storage:** local Qdrant in Docker, or Qdrant Cloud.
+- **Language model:** on-device (WebLLM), OpenAI, Groq, Gemini, or a custom OpenAI-compatible base
+  URL (Azure, Ollama, LM Studio, a proxy).
+- **Embeddings** always run in your browser.
+
+## Numbers
+
+Measured with `npm run eval` on BEIR SciFact: 300 queries over a 1000-document corpus, using the
+extension's own chunking, BM25 and Qdrant query code. Full method in
+[`eval/RESULTS.md`](eval/RESULTS.md).
+
+| Metric | Value |
+| --- | --- |
+| nDCG@10, hybrid (dense + BM25) | **0.842** |
+| nDCG@10, dense only | 0.835 |
+| nDCG@10, BM25 only | 0.795 |
+| Recall@10, hybrid | 0.925 |
+| MRR@10, hybrid | 0.819 |
+| Bundled embedding model | 23 MB (`leaf-ir`, q8), works offline |
+| Embedding speed (Node, Apple M2) | 16 ms per chunk, 2 ms per query |
+| Qdrant query time | about 2 ms |
+| Servers run by this project | 0 |
+| Analytics and telemetry | none |
+
+Two honest notes. Hybrid beats dense-only on SciFact, but only by about 0.007 nDCG, so on
+scientific abstracts most of the quality comes from the embedder. SciFact is also not web pages;
+we have not yet measured retrieval on real browsing content. We picked the embedder by a written
+rule (best hybrid nDCG within a size budget), recorded in [`DECISIONS.md`](DECISIONS.md), which
+chose `leaf-ir-q8` over three larger candidates.
+
+## How it works
+
+1. **Add tabs.** The extension reads the page text, keeping its structure.
+2. **Index.** Text is split into overlapping chunks of about 180 words. Each chunk is embedded in
+   the browser by the bundled model and upserted to Qdrant as a dense vector plus a BM25 sparse
+   vector. Point IDs are hashes of the source key and chunk index, so re-adding a page is
+   idempotent.
+3. **Ask.** The agent plans queries, runs hybrid search (dense and sparse prefetches, weighted
+   RRF, grouped by source), and checks whether the evidence covers the question.
+4. **Answer.** The model writes the answer from numbered snippets. Citations are validated against
+   the snippets that were actually retrieved before they are shown.
+
+Two answering paths, chosen in [`src/offscreen.js`](src/offscreen.js):
+
+| | Deep agent | Pipeline |
+| --- | --- | --- |
+| Code | [`src/lib/deep-agent.js`](src/lib/deep-agent.js) | [`src/lib/agent.js`](src/lib/agent.js) |
+| Used when | Agent mode is `deep` and the provider is OpenAI-compatible with a key | Everything else, and as the fallback |
+| Tools | `list_sources`, `search_pages`, `read_page`, planning, `researcher` subagent | Fixed: plan, search, sufficiency check, answer |
+| Hops | Open-ended, bounded by a recursion limit and a 150 s timeout | At most two |
+| Citations | Renumbered from a shared registry, kept only if they resolve to a real snippet | Validated against retrieved snippets |
+
+## Install
 
 `dist/` is committed pre-built, so you can load the extension without installing Node.
 
@@ -65,15 +169,26 @@ vector database and a language model that you choose.
    docker compose up -d
    ```
 
-   Or skip this step and use a [Qdrant Cloud](https://cloud.qdrant.io) cluster (see
+   Or skip this and use a [Qdrant Cloud](https://cloud.qdrant.io) cluster (see
    [Configuration](#configuration)).
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Click **Load unpacked** and select this repository folder (the one containing `manifest.json`).
-4. Follow the onboarding page, or open **Settings** from the popup's **...** menu to choose your backends.
-5. Open a few pages, open the popup, choose **Pages**, add the tabs you want, then ask a question in **Chat**.
+4. Follow the setup checklist, or open **Settings** from the popup's **...** menu.
 
-Requirements: a Chromium browser with WebGPU (Chrome 113+ or an equivalent Edge build) if you use
-the on-device language model. Hosted language models do not need WebGPU.
+Requirements: a Chromium browser. The on-device language model also needs WebGPU (Chrome 113+ or
+an equivalent Edge build). Hosted language models do not.
+
+## Using it
+
+1. Open a few pages.
+2. Open the popup and choose **Pages**. Add the current tab, tick specific tabs, or add them all.
+3. Switch to **Chat** and ask.
+4. Use the scope switch to search only your working set, or your whole library.
+5. Open the history button to return to earlier threads.
+
+Questions that work well: comparisons across pages ("how do these two docs differ on
+authentication?"), lookups ("what version introduced this flag?"), and summaries ("summarize this
+page").
 
 ## Configuration
 
@@ -90,14 +205,13 @@ All settings live in the extension's Settings page and are stored in `chrome.sto
 
 | Provider | Default model | Requirements |
 | --- | --- | --- |
-| **On-device (WebLLM)** (default) | `Qwen3-0.6B-q4f16_1-MLC` (thinking disabled) | WebGPU, ~0.5 GB one-time download |
+| **On-device (WebLLM)** (default) | `Qwen3-0.6B-q4f16_1-MLC` (thinking disabled) | WebGPU, about 0.5 GB one-time download |
 | OpenAI | `gpt-6-luna` | API key |
 | Groq | `llama-3.3-70b-versatile` | API key |
 | Google Gemini | `gemini-1.5-flash` | API key |
 
-The model field can be set to any model the provider supports, and **Test key** checks the key
-and model without spending tokens. Embeddings always run in the browser, regardless of the
-provider you pick.
+The model field accepts any model the provider supports. **Test key** checks the key and model
+without spending tokens.
 
 ### Retrieval and agent mode
 
@@ -106,8 +220,8 @@ provider you pick.
 | Retrieval mode | `hybrid` (dense + BM25, RRF), `dense`, `sparse` | `hybrid` |
 | Agent mode | `deep` (research agent), `pipeline` (fixed path) | `deep` |
 
-The deep agent runs only with OpenAI-compatible providers (OpenAI, Groq, or a custom base URL) and
-an API key. WebLLM and Gemini always use the pipeline.
+The deep agent runs only with OpenAI-compatible providers and an API key. WebLLM and Gemini always
+use the pipeline.
 
 ## Privacy
 
@@ -119,41 +233,17 @@ What leaves your machine depends on the backends you choose:
 | Your questions | Stay on your machine | Stay on your machine | Sent to the provider |
 | API keys | Stored in `chrome.storage.local` | Stored in `chrome.storage.local` | Stored in `chrome.storage.local` |
 
-Additional notes:
-
 - The extension has no analytics or telemetry, and the project runs no servers.
 - The embedding model ships inside the extension. Only the optional on-device language model is
-  downloaded (from the WebLLM model CDN, on first use). That request does not include your data.
-- Local Qdrant is reachable by any software running as your user. Do not index sensitive pages on a
-  shared machine.
+  downloaded (from the WebLLM model CDN, on first use), and that request does not include your data.
+- Local Qdrant is reachable by any software running as your user. Do not index sensitive pages on
+  a shared machine.
 - See [`privacy-policy.html`](privacy-policy.html) and [`store/permissions.md`](store/permissions.md)
   for the full policy and a justification of each permission.
 
-## How it works
+## Architecture
 
-**Indexing.** Adding a tab extracts its readable text, splits it into overlapping ~180-word
-chunks, embeds each chunk in the browser with a 23 MB model that ships inside the extension (no
-download, works offline), and upserts the chunks to Qdrant as named dense and sparse vectors. Point IDs are deterministic hashes of the source key and chunk index.
-
-**Answering.** There are two paths, chosen in [`src/offscreen.js`](src/offscreen.js).
-
-*Deep agent* ([`src/lib/deep-agent.js`](src/lib/deep-agent.js)): used when agent mode is `deep` and
-the provider is OpenAI-compatible with a key. The agent has three tools, `list_sources`,
-`search_pages` (hybrid search) and `read_page`, plus planning and a `researcher` subagent. Every
-snippet a tool returns is numbered in a shared registry, and the final `[n]` citations are
-renumbered and kept only if they resolve to a real snippet. A recursion limit and a 150 s timeout
-bound a run, and any failure falls back to the pipeline.
-
-*Pipeline* ([`src/lib/agent.js`](src/lib/agent.js)): runs at most two hops:
-
-1. The language model plans one to three search queries from the question.
-2. Each query is embedded and searched in Qdrant in one Query API call: dense and sparse
-   prefetches, weighted RRF fusion, and grouping by source.
-3. A sufficiency check looks at the score distribution and asks the model whether the snippets
-   cover the question. If not, one refined follow-up search runs.
-4. The top snippets are passed to the model as numbered context, and it writes a cited answer.
-
-**Architecture.** Models and the agent loop live in a Chrome
+Models and the agent loop live in a Chrome
 [offscreen document](https://developer.chrome.com/docs/extensions/reference/api/offscreen), which
 outlives the popup and, unlike an MV3 service worker, has reliable DOM and WebGPU access.
 `background.js` is a thin router that reads tab content and creates the offscreen document.
@@ -165,37 +255,10 @@ popup / settings / onboarding  <->  background (service worker)  <->  offscreen 
                                                                         └─ deep agent / pipeline -> Qdrant
 ```
 
-Design rationale and verified behaviors are recorded in [`DECISIONS.md`](DECISIONS.md).
+Design rationale and verified behaviors are in [`DECISIONS.md`](DECISIONS.md).
 
-## Platform support
-
-| Platform | Status |
-| --- | --- |
-| Chrome / Edge on Windows and macOS | Supported |
-| Chrome on Linux / ChromeOS | Expected to work; not regularly tested |
-| Chrome on iOS, iPadOS, and Android | Not possible. These browsers do not support Chrome extensions. |
-
-The on-device language model needs a working WebGPU adapter, which depends on your GPU, drivers,
-and any organization policy. If none is available, the popup explains how to check `chrome://gpu`,
-or you can switch to a hosted provider. The embedder runs on WASM and never needs a GPU.
-
-## Development
-
-Requires Node.js 18+ and npm.
-
-```bash
-npm install            # install dependencies
-npm run build          # bundle src/ into dist/
-npm run watch          # rebuild on change
-npm test               # unit tests (no services required)
-npm run test:integration   # integration tests against live Qdrant (docker compose up -d)
-npm run eval               # retrieval eval on BEIR SciFact; needs Qdrant, writes eval/RESULTS.md
-```
-
-After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`. The build
-compiles Tailwind CSS (`src/ui/styles.css` to `dist/ui.css`) and bundles the React pages with esbuild.
-
-### Project layout
+<details>
+<summary>Project layout</summary>
 
 ```
 manifest.json            Extension manifest (MV3)
@@ -234,22 +297,68 @@ docker-compose.yml       Local Qdrant
 dist/                    Pre-built bundles
 ```
 
-## Known limitations
+</details>
 
-- Text extraction removes scripts and page chrome but is not Readability-grade. Client-rendered
-  sites, paywalled pages, and content behind interaction may extract poorly.
-- The library keeps only the latest snapshot of each source, not its history.
-- Navigating a tab after adding it does not re-index it. Remove and re-add the tab to refresh.
-- Upgrading from the earlier IndexedDB-only version does not migrate existing data.
-- The on-device model (Qwen3-0.6B) is small. Expect weaker synthesis than a hosted model.
-- Retrieval quality is measured on scientific abstracts (BEIR SciFact), where hybrid search did not
-  beat dense-only. See [`eval/RESULTS.md`](eval/RESULTS.md) and [`DECISIONS.md`](DECISIONS.md).
+## Development
+
+Requires Node.js 18+ and npm.
+
+```bash
+npm install                # install dependencies
+npm run build              # bundle src/ into dist/
+npm run watch              # rebuild on change
+npm test                   # unit tests (no services required)
+npm run test:integration   # integration tests against live Qdrant (docker compose up -d)
+npm run eval               # retrieval eval on BEIR SciFact; needs Qdrant, writes eval/RESULTS.md
+```
+
+After rebuilding, reload the extension from `chrome://extensions`. Chrome does not watch `dist/`.
+The build compiles Tailwind CSS (`src/ui/styles.css` to `dist/ui.css`) and bundles the React pages
+with esbuild.
+
+## FAQ
+
+**Does anything leave my machine?**
+Not with local Qdrant and the on-device model. With a hosted model, the retrieved snippets and
+your question go to that provider. With Qdrant Cloud, page text goes to your cluster. See
+[Privacy](#privacy).
+
+**Why do I need Docker?**
+For local Qdrant. If you would rather not run it, point the extension at a Qdrant Cloud cluster.
+
+**Why is the on-device model's answer weaker than ChatGPT's?**
+It is Qwen3-0.6B, chosen because it downloads in about 0.5 GB and runs in a browser. Retrieval and
+citations are the same; the writing is simpler. Use a hosted model for better synthesis, and for
+the deep agent.
+
+**Will it work on my phone?**
+No. Chrome on iOS, iPadOS and Android does not support extensions. Chrome and Edge on Windows and
+macOS are supported. Linux and ChromeOS are expected to work but are not regularly tested.
+
+**The on-device model will not start.**
+It needs a working WebGPU adapter, which depends on your GPU, drivers and any organization policy.
+The popup explains how to check `chrome://gpu`, or you can switch to a hosted provider. The
+embedder runs on WASM and never needs a GPU.
+
+**A page extracted badly.**
+Extraction strips scripts and page chrome but is not Readability-grade. Client-rendered sites,
+paywalled pages and content behind interaction may extract poorly.
+
+**I navigated a tab after adding it. Is it updated?**
+No. Remove and re-add the tab to refresh. The library keeps only the latest snapshot of each source.
+
+**I used an older version. Is my data still there?**
+No. Upgrading from the earlier IndexedDB-only version does not migrate existing data.
+
+**Is the retrieval any good?**
+On scientific abstracts, yes: see [Numbers](#numbers). It has not been measured on general web
+content yet.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please run `npm test` and `npm run build` before opening a
-PR, and commit rebuilt `dist/` bundles when you change `src/`. A screenshot or GIF of an answered
-question would be a valuable contribution.
+Issues and pull requests are welcome. Run `npm test` and `npm run build` before opening a PR, and
+commit rebuilt `dist/` bundles when you change `src/`. A screenshot or GIF of an answered question
+would be a valuable contribution.
 
 ## License
 
